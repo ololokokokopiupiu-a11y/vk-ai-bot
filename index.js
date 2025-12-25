@@ -1,3 +1,4 @@
+console.log("=== INDEX.JS VERSION 777 ===");
 import express from "express";
 import fetch from "node-fetch";
 
