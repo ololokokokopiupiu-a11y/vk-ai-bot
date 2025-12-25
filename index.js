@@ -13,8 +13,7 @@ app.get("/", (req, res) => {
 });
 
 app.post("/", async (req, res) => {
-  const body = req.body;
-  console.log("EVENT TYPE:", body.type);
+  const body = req.body;);
 
   // подтверждение сервера
   if (body.type === "confirmation") {
