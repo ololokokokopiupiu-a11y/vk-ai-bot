@@ -19,8 +19,8 @@ app.post("/", async (req, res) => {
 
   // Новое сообщение
   if (body.type === "message_new") {
-    const userId = body.object.message.from_id;
-    const text = body.object.message.text;
+    const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
+const VK_TOKEN = process.env.VK_TOKEN;
 
     // Логирование входящего сообщения в Render
     console.log(`Новое сообщение от ${userId}: ${text}`);
