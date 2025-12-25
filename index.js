@@ -7,12 +7,9 @@ app.use(express.json());
 // 🔴 ВСТАВЬ СВОЙ ТОКЕН СООБЩЕСТВА
 const VK_TOKEN = "vk1.a.ВСТАВЬ_СВОЙ_ТОКЕН_СЮДА";
 
-// 🔴 СТРОКА ПОДТВЕРЖДЕНИЯ ИЗ VK
+// 🔴 СТРОКА ПОДТВЕРЖДЕНИЯ
 const VK_CONFIRMATION = "cc9b1e12";
 
-console.log("VK TOKEN LENGTH:", VK_TOKEN.length);
-
-// ===== CALLBACK =====
 app.post("/", async (req, res) => {
   const body = req.body;
 
@@ -23,50 +20,49 @@ app.post("/", async (req, res) => {
     return res.send(VK_CONFIRMATION);
   }
 
-  // новое сообщение
   if (body.type === "message_new") {
     const msg = body.object.message;
 
-    // ❗ защита от ответа самому себе
+    // защита от бота
     if (msg.from_id <= 0) {
       return res.send("ok");
     }
 
-    const peerId = msg.peer_id; // 🔥 ВАЖНО: ИМЕННО peer_id
+    const params = new URLSearchParams({
+      peer_id: msg.peer_id.toString(),
+      message: "Бот жив и отвечает ✅",
+      random_id: Date.now().toString(),
+      access_token: VK_TOKEN,
+      v: "5.199"
+    });
 
     try {
-      const vkResponse = await fetch(
+      const response = await fetch(
         "https://api.vk.com/method/messages.send",
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            peer_id: peerId,
-            message: "Бот жив и отвечает ✅",
-            random_id: Date.now(),
-            access_token: VK_TOKEN,
-            v: "5.199"
-          })
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded"
+          },
+          body: params
         }
       );
 
-      const vkData = await vkResponse.json();
-      console.log("VK SEND RESPONSE:", vkData);
+      const data = await response.json();
+      console.log("VK SEND RESPONSE:", data);
 
-    } catch (err) {
-      console.error("VK SEND ERROR:", err);
+    } catch (e) {
+      console.error("SEND ERROR:", e);
     }
   }
 
   res.send("ok");
 });
 
-// GET /
 app.get("/", (req, res) => {
   res.send("OK");
 });
 
-// START
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server started on port", PORT);
