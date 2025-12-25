@@ -1,13 +1,15 @@
-const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
-const VK_TOKEN = process.env.VK_TOKEN;
+import express from "express";
+import fetch from "node-fetch";
 
-console.log("VK_TOKEN =", VK_TOKEN);
+const app = express();
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.get("/", (req, res) => {
-  res.send("OK");
+const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
+const VK_TOKEN = process.env.VK_TOKEN;
+
+console.log("VK_TOKEN =", VK_TOKEN);
 });
 
 const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
