@@ -14,6 +14,7 @@ console.log("OPENAI_API_KEY:", OPENAI_API_KEY ? "OK" : "EMPTY");
 
 app.post("/", async (req, res) => {
   const body = req.body;
+
   console.log("EVENT TYPE:", body.type);
 
   if (body.type === "confirmation") {
@@ -21,23 +22,18 @@ app.post("/", async (req, res) => {
   }
 
   if (body.type === "message_new") {
-  console.log("INSIDE MESSAGE_NEW");
-
-  // 🔒 защита от ответа самому себе и системным сообщениям
-  if (body.object.message.from_id <= 0) {
-    return res.send("ok");
-  }
-
-  const message = body.object.message.text || "";
-  const userId = body.object.message.from_id;
-
-  // дальше идёт OpenAI и отправка в VK
-}
-
-
-    let replyText = "Я тут 👋";
-
     try {
+      // защита от ответа самому себе
+      if (body.object.message.from_id <= 0) {
+        return res.send("ok");
+      }
+
+      const userText = body.object.message.text || "";
+      const userId = body.object.message.from_id;
+
+      let replyText = "Я тут 👋";
+
+      // OpenAI
       const aiResponse = await fetch(
         "https://api.openai.com/v1/chat/completions",
         {
@@ -52,9 +48,9 @@ app.post("/", async (req, res) => {
               {
                 role: "system",
                 content:
-                  "Ты полезный ИИ-помощник для русскоязычной аудитории ВКонтакте. Отвечай кратко и по делу."
+                  "Ты полезный ИИ-помощник для ВКонтакте. Отвечай кратко и по делу."
               },
-              { role: "user", content: message }
+              { role: "user", content: userText }
             ]
           })
         }
@@ -64,32 +60,33 @@ app.post("/", async (req, res) => {
       replyText =
         aiData?.choices?.[0]?.message?.content ||
         "Не смог сформировать ответ 😕";
+
+      // Отправка в VK (ВАЖНО: form-urlencoded)
+      const params = new URLSearchParams({
+        peer_id: userId.toString(),
+        message: replyText,
+        random_id: Date.now().toString(),
+        access_token: VK_TOKEN,
+        v: "5.199"
+      });
+
+      const vkResponse = await fetch(
+        "https://api.vk.com/method/messages.send",
+        {
+          method: "POST",
+          body: params
+        }
+      );
+
+      const vkData = await vkResponse.json();
+      console.log("VK RESPONSE:", vkData);
     } catch (err) {
-      console.error("OpenAI error:", err);
-      replyText = "Сейчас думаю… попробуй ещё раз 🙂";
+      console.error("HANDLER ERROR:", err);
     }
-
-    const params = new URLSearchParams({
-      peer_id: userId,
-      message: replyText,
-      random_id: Date.now().toString(),
-      access_token: VK_TOKEN,
-      v: "5.199"
-    });
-
-    const vkResponse = await fetch(
-      "https://api.vk.com/method/messages.send",
-      {
-        method: "POST",
-        body: params
-      }
-    );
-
-    const vkData = await vkResponse.json();
-    console.log("VK RESPONSE:", vkData);
   }
 
-  res.send("ok");
+  // VK ОБЯЗАТЕЛЬНО должен получить ok
+  return res.send("ok");
 });
 
 const PORT = process.env.PORT || 3000;
