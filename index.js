@@ -21,26 +21,27 @@ app.post("/", async (req, res) => {
     return res.send(VK_CONFIRMATION);
   }
 
-  if (body.type === "message_new") {
-    console.log("INSIDE MESSAGE_NEW");
+if (body.type === "message_new") {
+  console.log("INSIDE MESSAGE_NEW");
 
-    const userId = body.object.message.from_id;
+  const peerId = body.object.message.peer_id;
 
-    const vkResponse = await fetch("https://api.vk.com/method/messages.send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        peer_id: userId,
-        message: "Бот жив и отвечает ✅",
-        random_id: Date.now(),
-        access_token: VK_TOKEN,
-        v: "5.199"
-      })
-    });
+  const vkResponse = await fetch("https://api.vk.com/method/messages.send", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      peer_id: peerId,
+      message: "Бот наконец-то отвечает 🚀",
+      random_id: Date.now(),
+      access_token: VK_TOKEN,
+      v: "5.199"
+    })
+  });
 
-    const vkData = await vkResponse.json();
-    console.log("VK SEND RESPONSE:", vkData);
-  }
+  const vkData = await vkResponse.json();
+  console.log("VK SEND RESPONSE:", vkData);
+}
+
 
   res.send("ok");
 });
