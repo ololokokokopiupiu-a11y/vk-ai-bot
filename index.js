@@ -4,25 +4,22 @@ import fetch from "node-fetch";
 const app = express();
 app.use(express.json());
 
-// 👉 GET / — чтобы не было Not Found
+// тест сервера
 app.get("/", (req, res) => {
   res.send("OK");
 });
 
-// переменные окружения
 const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
 const VK_TOKEN = process.env.VK_TOKEN;
 
-// 👉 Callback от VK
 app.post("/", async (req, res) => {
   const body = req.body;
+  console.log("VK EVENT:", body.type);
 
-  // подтверждение сервера
   if (body.type === "confirmation") {
     return res.send(VK_CONFIRMATION);
   }
 
-  // новое сообщение
   if (body.type === "message_new") {
     const userId = body.object.message.from_id;
 
@@ -31,7 +28,7 @@ app.post("/", async (req, res) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         peer_id: userId,
-        message: "Привет! Я работаю 👋",
+        message: "Бот жив и отвечает ✅",
         random_id: Date.now(),
         access_token: VK_TOKEN,
         v: "5.131"
@@ -42,9 +39,7 @@ app.post("/", async (req, res) => {
   res.send("ok");
 });
 
-// запуск
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("Server started on", PORT);
+  console.log("Server started on port", PORT);
 });
-
