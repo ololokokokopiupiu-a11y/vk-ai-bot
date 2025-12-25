@@ -1,3 +1,4 @@
+console.log("VK_TOKEN VALUE:", process.env.VK_TOKEN);
 import express from "express";
 import fetch from "node-fetch";
 
