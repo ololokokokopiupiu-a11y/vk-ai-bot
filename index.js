@@ -1,16 +1,18 @@
-console.log("VK_TOKEN VALUE:", process.env.VK_TOKEN);
 import express from "express";
 import fetch from "node-fetch";
 
 const app = express();
 app.use(express.json());
 
-// ====== ENV ======
-const VK_TOKEN = process.env.VK_TOKEN;               // токен сообщества
-const VK_CONFIRMATION = process.env.VK_CONFIRMATION; // строка подтверждения
+// ====== ВАЖНО ======
+// 🔴 ВСТАВЬ СЮДА СВОЙ ТОКЕН СООБЩЕСТВА
+const VK_TOKEN = "vk1.a.ВСТАВЬ_СВОЙ_ТОКЕН_СЮДА";
 
-console.log("VK_TOKEN:", VK_TOKEN ? "OK" : "MISSING");
-console.log("VK_CONFIRMATION:", VK_CONFIRMATION ? "OK" : "MISSING");
+// 🔴 СТРОКА ПОДТВЕРЖДЕНИЯ ИЗ VK
+const VK_CONFIRMATION = "cc9b1e12";
+
+console.log("VK_TOKEN LENGTH:", VK_TOKEN.length);
+console.log("VK_CONFIRMATION:", VK_CONFIRMATION);
 
 // ====== CALLBACK ======
 app.post("/", async (req, res) => {
@@ -18,16 +20,16 @@ app.post("/", async (req, res) => {
 
   console.log("EVENT TYPE:", body.type);
 
-  // 1️⃣ подтверждение сервера
+  // подтверждение сервера
   if (body.type === "confirmation") {
     return res.send(VK_CONFIRMATION);
   }
 
-  // 2️⃣ новое сообщение
+  // новое сообщение
   if (body.type === "message_new") {
     const msg = body.object.message;
 
-    // ❗ не отвечаем на сообщения от сообщества
+    // ❗ защита от ответа самому себе
     if (msg.from_id <= 0) {
       return res.send("ok");
     }
@@ -58,11 +60,10 @@ app.post("/", async (req, res) => {
     }
   }
 
-  // VK ВСЕГДА ждёт ok
   res.send("ok");
 });
 
-// ====== OPTIONAL GET (чтобы не было Cannot GET /) ======
+// ====== GET / (чтобы не было Cannot GET /) ======
 app.get("/", (req, res) => {
   res.send("OK");
 });
