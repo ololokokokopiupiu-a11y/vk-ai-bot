@@ -1,7 +1,7 @@
-import express from "express";
-import fetch from "node-fetch";
+const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
+const VK_TOKEN = process.env.VK_TOKEN;
 
-const app = express();
+console.log("VK_TOKEN =", VK_TOKEN);
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
