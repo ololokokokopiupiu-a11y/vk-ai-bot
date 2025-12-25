@@ -4,61 +4,78 @@ import fetch from "node-fetch";
 const app = express();
 app.use(express.json());
 
-// === ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ===
-const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
+// ===== ENV =====
 const VK_TOKEN = process.env.VK_TOKEN;
+const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
+const OPENAI_KEY = process.env.OPENAI_KEY;
 
-// === ПРОВЕРКА (можно потом убрать) ===
-console.log("VK_TOKEN =", VK_TOKEN ? "OK" : "MISSING");
-
-// === CALLBACK ОТ VK ===
+// ===== VK CALLBACK =====
 app.post("/", async (req, res) => {
   const body = req.body;
-
   console.log("EVENT TYPE:", body.type);
 
-  // 1️⃣ Подтверждение сервера
+  // 1. Подтверждение сервера
   if (body.type === "confirmation") {
     return res.send(VK_CONFIRMATION);
   }
 
-  // 2️⃣ Новое сообщение
+  // 2. Новое сообщение
   if (body.type === "message_new") {
     console.log("INSIDE MESSAGE_NEW");
 
-    const peerId = body.object.message.peer_id;
+    const userId = body.object.message.from_id;
+    const userText = body.object.message.text || "Привет";
 
-    // ⚠️ VK ТРЕБУЕТ form-urlencoded
-    const params = new URLSearchParams({
-      peer_id: peerId.toString(),
-      message: "Бот жив и отвечает ✅",
-      random_id: Date.now().toString(),
-      access_token: VK_TOKEN,
-      v: "5.199"
+    let replyText = "Я жив, но OpenAI не ответил 😢";
+
+    // ===== OPENAI =====
+    try {
+      const aiResponse = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${OPENAI_KEY}`
+        },
+        body: JSON.stringify({
+          model: "gpt-4.1-mini",
+          input: userText
+        })
+      });
+
+      const aiData = await aiResponse.json();
+      console.log("OPENAI RESPONSE:", aiData);
+
+      replyText =
+        aiData.output_text ||
+        "OpenAI ответил, но без текста 🤷‍♂️";
+
+    } catch (err) {
+      console.error("OPENAI ERROR:", err);
+    }
+
+    // ===== VK SEND =====
+    const vkResponse = await fetch("https://api.vk.com/method/messages.send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        peer_id: userId,
+        message: replyText,
+        random_id: Date.now(),
+        access_token: VK_TOKEN,
+        v: "5.199"
+      })
     });
 
-    try {
-      const vkResponse = await fetch(
-        "https://api.vk.com/method/messages.send",
-        {
-          method: "POST",
-          body: params
-        }
-      );
-
-      const vkData = await vkResponse.json();
-      console.log("VK SEND RESPONSE:", vkData);
-    } catch (err) {
-      console.error("VK SEND ERROR:", err);
-    }
+    const vkData = await vkResponse.json();
+    console.log("VK SEND RESPONSE:", vkData);
   }
 
-  // VK всегда ждёт "ok"
+  // VK ОБЯЗАТЕЛЬНО
   res.send("ok");
 });
 
-// === ЗАПУСК СЕРВЕРА ===
-const PORT = process.env.PORT || 3000;
+// ===== SERVER =====
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log("Server started on port", PORT);
 });
