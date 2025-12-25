@@ -4,9 +4,10 @@ import fetch from "node-fetch";
 const app = express();
 app.use(express.json());
 
-// Переменные окружения из Render
-const VK_CONFIRMATION = "505edd73"; // строка подтверждения из VK
-const VK_TOKEN = process.env.VK_TOKEN; // токен сообщества VK
+// Переменные окружения
+const VK_CONFIRMATION = process.env.VK_CONFIRMATION; // строка подтверждения из VK
+const VK_TOKEN = process.env.VK_TOKEN;               // токен сообщества VK
+const OPENAI_KEY = process.env.OPENAI_KEY;           // ваш OpenAI API key
 
 // Обработка POST-запросов от VK
 app.post("/", async (req, res) => {
@@ -20,6 +21,27 @@ app.post("/", async (req, res) => {
   // Новое сообщение
   if (body.type === "message_new") {
     const userId = body.object.message.from_id;
+    const userText = body.object.message.text;
+
+    // Генерация ответа через OpenAI
+    let replyText = "Произошла ошибка с OpenAI.";
+    try {
+      const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${OPENAI_KEY}`
+        },
+        body: JSON.stringify({
+          model: "gpt-4",
+          messages: [{ role: "user", content: userText }]
+        })
+      });
+      const data = await response.json();
+      replyText = data.choices[0].message.content;
+    } catch (err) {
+      console.error("OpenAI error:", err);
+    }
 
     // Отправка ответа через VK API
     await fetch("https://api.vk.com/method/messages.send", {
@@ -27,24 +49,19 @@ app.post("/", async (req, res) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         peer_id: userId,
-        message: "Привет! Я работаю и могу отвечать на сообщения.",
+        message: replyText,
         random_id: Date.now(),
         access_token: VK_TOKEN,
-        v: "5.131",
-      }),
+        v: "5.131"
+      })
     });
   }
 
-  // VK требует ответ "ok" на все POST-запросы
+  // VK требует "ok" на все POST-запросы
   res.send("ok");
 });
 
 // Запуск сервера
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("VK bot started on port", PORT);
-});
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("VK bot started on port", PORT);
