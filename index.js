@@ -4,15 +4,16 @@ import fetch from "node-fetch";
 const app = express();
 app.use(express.json());
 
+// ===== ENV =====
 const VK_TOKEN = process.env.VK_TOKEN;
 const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
 
-// Проверка, что сервер жив (для браузера)
+// ===== ПРОВЕРКА СЕРВЕРА =====
 app.get("/", (req, res) => {
   res.send("VK bot is alive ✅");
 });
 
-// Callback от VK
+// ===== CALLBACK VK =====
 app.post("/", async (req, res) => {
   const body = req.body;
   console.log("EVENT TYPE:", body.type);
@@ -24,30 +25,34 @@ app.post("/", async (req, res) => {
 
   // Новое сообщение
   if (body.type === "message_new") {
+    console.log("INSIDE MESSAGE_NEW");
+
     const userId = body.object.message.from_id;
 
-    const vkResponse = await fetch(
-      "https://api.vk.com/method/messages.send",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          peer_id: userId,
-          message: "Бот жив и отвечает ✅",
-          random_id: Date.now(),
-          access_token: VK_TOKEN,
-          v: "5.199"
-        })
-      }
+    console.log(
+      "VK_TOKEN LENGTH:",
+      VK_TOKEN ? VK_TOKEN.length : "NO TOKEN"
     );
 
-    const vkData = await vkResponse.json();
-    console.log("VK SEND RESPONSE:", vkData);
+    try {
+      const vkResponse = await fetch(
+        `https://api.vk.com/method/messages.send?peer_id=${userId}&message=${encodeURIComponent(
+          "Бот жив и отвечает ✅"
+        )}&random_id=${Date.now()}&access_token=${VK_TOKEN}&v=5.199`
+      );
+
+      const vkData = await vkResponse.json();
+      console.log("VK SEND RESPONSE:", vkData);
+    } catch (err) {
+      console.error("VK SEND ERROR:", err);
+    }
   }
 
+  // VK ОБЯЗАТЕЛЬНО ЖДЁТ ok
   res.send("ok");
 });
 
+// ===== SERVER =====
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log("Server started on port", PORT);
