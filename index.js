@@ -4,17 +4,15 @@ import fetch from "node-fetch";
 const app = express();
 app.use(express.json());
 
-// ====== ВАЖНО ======
-// 🔴 ВСТАВЬ СЮДА СВОЙ ТОКЕН СООБЩЕСТВА
+// 🔴 ВСТАВЬ СВОЙ ТОКЕН СООБЩЕСТВА
 const VK_TOKEN = "vk1.a.ВСТАВЬ_СВОЙ_ТОКЕН_СЮДА";
 
 // 🔴 СТРОКА ПОДТВЕРЖДЕНИЯ ИЗ VK
 const VK_CONFIRMATION = "cc9b1e12";
 
-console.log("VK_TOKEN LENGTH:", VK_TOKEN.length);
-console.log("VK_CONFIRMATION:", VK_CONFIRMATION);
+console.log("VK TOKEN LENGTH:", VK_TOKEN.length);
 
-// ====== CALLBACK ======
+// ===== CALLBACK =====
 app.post("/", async (req, res) => {
   const body = req.body;
 
@@ -34,7 +32,7 @@ app.post("/", async (req, res) => {
       return res.send("ok");
     }
 
-    const userId = msg.from_id;
+    const peerId = msg.peer_id; // 🔥 ВАЖНО: ИМЕННО peer_id
 
     try {
       const vkResponse = await fetch(
@@ -43,7 +41,7 @@ app.post("/", async (req, res) => {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            peer_id: userId,
+            peer_id: peerId,
             message: "Бот жив и отвечает ✅",
             random_id: Date.now(),
             access_token: VK_TOKEN,
@@ -63,12 +61,12 @@ app.post("/", async (req, res) => {
   res.send("ok");
 });
 
-// ====== GET / (чтобы не было Cannot GET /) ======
+// GET /
 app.get("/", (req, res) => {
   res.send("OK");
 });
 
-// ====== START ======
+// START
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server started on port", PORT);
