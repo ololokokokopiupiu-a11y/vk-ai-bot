@@ -31,7 +31,7 @@ app.post("/", async (req, res) => {
     message: "Бот жив и отвечает ✅",
     random_id: Date.now(),
     access_token: VK_TOKEN,
-    v: "5.131"
+    v: "5.199"
       })
     });
   }
