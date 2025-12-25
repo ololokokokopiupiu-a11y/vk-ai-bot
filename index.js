@@ -4,9 +4,9 @@ import fetch from "node-fetch";
 const app = express();
 app.use(express.json());
 
-// Переменные окружения
+// Переменные окружения из Render
 const VK_CONFIRMATION = process.env.VK_CONFIRMATION; // confirmation string из VK
-const VK_TOKEN = process.env.VK_TOKEN; // токен сообщества VK
+const VK_TOKEN = process.env.VK_TOKEN;               // токен сообщества VK
 
 // Обработка POST-запросов от VK
 app.post("/", async (req, res) => {
@@ -19,11 +19,18 @@ app.post("/", async (req, res) => {
 
   // Новое сообщение
   if (body.type === "message_new") {
-    const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
-const VK_TOKEN = process.env.VK_TOKEN;
+    const userId = body.object.message.from_id;
+    const text = body.object.message.text.toLowerCase();
 
-    // Логирование входящего сообщения в Render
+    // Логируем в консоль для отладки
     console.log(`Новое сообщение от ${userId}: ${text}`);
+
+    // Выбираем ответ в зависимости от текста
+    let reply = "Привет! Я работаю и могу отвечать на сообщения.";
+
+    if (text.includes("привет")) reply = "Привет! Рад тебя видеть!";
+    if (text.includes("как дела")) reply = "У меня всё отлично! А у тебя?";
+    if (text.includes("бот")) reply = "Да, это я — ваш дружелюбный бот!";
 
     // Отправка ответа через VK API
     await fetch("https://api.vk.com/method/messages.send", {
@@ -31,7 +38,7 @@ const VK_TOKEN = process.env.VK_TOKEN;
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         peer_id: userId,
-        message: "🤖 Привет! Я работаю и могу отвечать на сообщения.",
+        message: reply,
         random_id: Date.now(),
         access_token: VK_TOKEN,
         v: "5.131",
