@@ -21,10 +21,19 @@ app.post("/", async (req, res) => {
   }
 
   if (body.type === "message_new") {
-    console.log("INSIDE MESSAGE_NEW");
+  console.log("INSIDE MESSAGE_NEW");
 
-    const message = body.object.message.text || "";
-    const userId = body.object.message.from_id;
+  // 🔒 защита от ответа самому себе и системным сообщениям
+  if (body.object.message.from_id <= 0) {
+    return res.send("ok");
+  }
+
+  const message = body.object.message.text || "";
+  const userId = body.object.message.from_id;
+
+  // дальше идёт OpenAI и отправка в VK
+}
+
 
     let replyText = "Я тут 👋";
 
