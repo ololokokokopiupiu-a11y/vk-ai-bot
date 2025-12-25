@@ -4,7 +4,7 @@ import fetch from "node-fetch";
 const app = express();
 app.use(express.json());
 
-// Переменные окружения из Render
+// Переменные окружения
 const VK_CONFIRMATION = process.env.VK_CONFIRMATION; // confirmation string из VK
 const VK_TOKEN = process.env.VK_TOKEN; // токен сообщества VK
 
@@ -20,6 +20,10 @@ app.post("/", async (req, res) => {
   // Новое сообщение
   if (body.type === "message_new") {
     const userId = body.object.message.from_id;
+    const text = body.object.message.text;
+
+    // Логирование входящего сообщения в Render
+    console.log(`Новое сообщение от ${userId}: ${text}`);
 
     // Отправка ответа через VK API
     await fetch("https://api.vk.com/method/messages.send", {
