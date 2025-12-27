@@ -9,12 +9,12 @@ const VK_TOKEN = process.env.VK_TOKEN;
 const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// ===== MEMORY & LIMITS =====
-const dialogState = new Map();
+// ===== MEMORY =====
+const userMemory = new Map(); // user_id -> messages[]
+const lastMessageTime = new Map(); // антифлуд
 
-const FLOOD_INTERVAL_MS = 2000; // 1 сообщение раз в 2 сек
-const FLOOD_MAX_MSG = 5;        // макс 5 сообщений
-const FLOOD_WINDOW_MS = 10000;  // за 10 сек
+const MAX_HISTORY = 10; // сколько сообщений хранить
+const FLOOD_DELAY = 3000; // 3 сек
 
 // ===== CALLBACK =====
 app.post("/", (req, res) => {
@@ -26,79 +26,50 @@ app.post("/", (req, res) => {
 
   res.send("ok");
 
-  if (body.type === "message_new") {
-    const message = body.object.message;
-    if (message.from_id <= 0) return;
+  if (body.type !== "message_new") return;
 
-    handleMessage(message).catch(console.error);
-  }
+  const message = body.object.message;
+  if (message.from_id <= 0) return;
+
+  handleMessage(message).catch(console.error);
 });
-
-// ===== TYPING =====
-async function sendTyping(peer_id) {
-  await fetch("https://api.vk.com/method/messages.setActivity", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      peer_id: peer_id.toString(),
-      type: "typing",
-      access_token: VK_TOKEN,
-      v: "5.199"
-    })
-  });
-}
 
 // ===== MESSAGE HANDLER =====
 async function handleMessage(message) {
-  const peerId = message.peer_id;
+  const userId = message.from_id;
   const now = Date.now();
 
-  // ===== АНТИФЛУД =====
-  if (!dialogState.has(peerId)) {
-    dialogState.set(peerId, {
-      lastMessageTime: 0,
-      timestamps: [],
-      summary: "",
-      recent: []
-    });
+  // ---- антифлуд ----
+  if (lastMessageTime.has(userId)) {
+    if (now - lastMessageTime.get(userId) < FLOOD_DELAY) {
+      return;
+    }
   }
+  lastMessageTime.set(userId, now);
 
-  const state = dialogState.get(peerId);
-
-  // слишком часто
-  if (now - state.lastMessageTime < FLOOD_INTERVAL_MS) return;
-
-  // окно сообщений
-  state.timestamps = state.timestamps.filter(t => now - t < FLOOD_WINDOW_MS);
-  if (state.timestamps.length >= FLOOD_MAX_MSG) return;
-
-  state.timestamps.push(now);
-  state.lastMessageTime = now;
-
-  // ===== TYPING =====
-  await sendTyping(peerId);
-  const typingInterval = setInterval(() => sendTyping(peerId), 4000);
-
-  const userText = message.text || "…";
-
-  // ===== RECENT MEMORY =====
-  state.recent.push({ role: "user", content: userText });
-  if (state.recent.length > 4) state.recent.shift();
-
-  let answer = "Я пока не могу ответить 🤖";
-
-  // ===== OpenAI =====
-  try {
-    const messages = [
+  // ---- память ----
+  if (!userMemory.has(userId)) {
+    userMemory.set(userId, [
       {
         role: "system",
         content:
-          "Ты дружелюбный VK-бот. Вот краткая память диалога:\n" +
-          (state.summary || "Диалог только начался.")
-      },
-      ...state.recent
-    ];
+          "Ты дружелюбный VK-бот. Запоминай имя пользователя, если он его сообщает, и используй его в дальнейшем диалоге."
+      }
+    ]);
+  }
 
+  const history = userMemory.get(userId);
+  history.push({ role: "user", content: message.text || "…" });
+
+  // ограничение истории
+  if (history.length > MAX_HISTORY + 1) {
+    history.splice(1, history.length - MAX_HISTORY - 1);
+  }
+
+  let answer = "Я пока не могу ответить 🤖";
+
+  // ---- OpenAI ----
+  try {
     const aiResponse = await fetch(
       "https://api.openai.com/v1/chat/completions",
       {
@@ -109,8 +80,7 @@ async function handleMessage(message) {
         },
         body: JSON.stringify({
           model: "gpt-4o-mini",
-          max_tokens: 200,
-          messages
+          messages: history
         })
       }
     );
@@ -118,71 +88,28 @@ async function handleMessage(message) {
     const aiData = await aiResponse.json();
     answer = aiData.choices?.[0]?.message?.content || answer;
 
+    history.push({ role: "assistant", content: answer });
   } catch (e) {
     console.error("OpenAI error:", e);
   }
 
-  // ===== SAVE ASSISTANT MESSAGE =====
-  state.recent.push({ role: "assistant", content: answer });
-  if (state.recent.length > 4) state.recent.shift();
-
-  // ===== UPDATE SUMMARY (умная память) =====
-  try {
-    const summaryResponse = await fetch(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: "gpt-4o-mini",
-          max_tokens: 100,
-          messages: [
-            {
-              role: "system",
-              content:
-                "Сожми диалог в краткое резюме (1–2 предложения), сохрани важные факты."
-            },
-            {
-              role: "user",
-              content:
-                "Прошлое резюме:\n" +
-                (state.summary || "—") +
-                "\n\nНовые сообщения:\n" +
-                state.recent.map(m => `${m.role}: ${m.content}`).join("\n")
-            }
-          ]
-        })
-      }
-    );
-
-    const summaryData = await summaryResponse.json();
-    state.summary =
-      summaryData.choices?.[0]?.message?.content || state.summary;
-
-  } catch (e) {
-    console.error("Summary error:", e);
-  }
-
-  clearInterval(typingInterval);
-
-  await sendVK(peerId, answer);
+  await sendVK(message.peer_id, answer);
 }
 
 // ===== SEND TO VK =====
 async function sendVK(peer_id, text) {
+  const params = new URLSearchParams({
+    peer_id: peer_id.toString(),
+    message: text,
+    random_id: Date.now().toString(),
+    access_token: VK_TOKEN,
+    v: "5.199"
+  });
+
   await fetch("https://api.vk.com/method/messages.send", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      peer_id: peer_id.toString(),
-      message: text,
-      random_id: Date.now().toString(),
-      access_token: VK_TOKEN,
-      v: "5.199"
-    })
+    body: params
   });
 }
 
