@@ -5,63 +5,103 @@ const app = express();
 app.use(express.json());
 
 // ===== ENV =====
-const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
 const VK_TOKEN = process.env.VK_TOKEN;
+const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// ===== ЛОГ ПРОВЕРКИ =====
 console.log("VK_TOKEN:", VK_TOKEN ? "OK" : "MISSING");
 console.log("VK_CONFIRMATION:", VK_CONFIRMATION ? "OK" : "MISSING");
+console.log("OPENAI_API_KEY:", OPENAI_API_KEY ? "OK" : "MISSING");
 
 // ===== CALLBACK =====
-app.post("/", async (req, res) => {
+app.post("/", (req, res) => {
   const body = req.body;
-
   console.log("EVENT TYPE:", body.type);
 
-  // 1️⃣ Подтверждение сервера
+  // 1. Confirmation
   if (body.type === "confirmation") {
-    return res.status(200).send(VK_CONFIRMATION);
+    return res.send(VK_CONFIRMATION);
   }
 
-  // 2️⃣ Новое сообщение
+  // 2. VK должен получить OK сразу
+  res.send("ok");
+
+  // 3. Обработка сообщения асинхронно
   if (body.type === "message_new") {
     const message = body.object.message;
 
-    // ❗ защита от ботов / групп
-    if (message.from_id <= 0) {
-      return res.send("ok");
-    }
+    // не отвечаем группам и ботам
+    if (message.from_id <= 0) return;
 
+    handleMessage(message).catch(err => {
+      console.error("handleMessage error:", err);
+    });
+  }
+});
+
+// ===== MESSAGE HANDLER =====
+async function handleMessage(message) {
+  const userText = message.text || "…";
+  let answer = "Я пока не могу ответить 🤖";
+
+  // --- OpenAI ---
+  if (OPENAI_API_KEY) {
     try {
-      const vkResponse = await fetch(
-        "https://api.vk.com/method/messages.send",
+      const aiResponse = await fetch(
+        "https://api.openai.com/v1/chat/completions",
         {
           method: "POST",
           headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
+            Authorization: `Bearer ${OPENAI_API_KEY}`,
+            "Content-Type": "application/json"
           },
-          body: new URLSearchParams({
-            peer_id: message.from_id.toString(),
-            message: "Бот жив и отвечает ✅",
-            random_id: Date.now().toString(),
-            access_token: VK_TOKEN,
-            v: "5.199",
-          }),
+          body: JSON.stringify({
+            model: "gpt-4o-mini",
+            messages: [
+              { role: "system", content: "Ты дружелюбный VK-бот и отвечаешь кратко." },
+              { role: "user", content: userText }
+            ]
+          })
         }
       );
 
-      const vkData = await vkResponse.json();
-      console.log("VK SEND RESPONSE:", vkData);
-    } catch (err) {
-      console.error("VK ERROR:", err);
+      const aiData = await aiResponse.json();
+      answer = aiData.choices?.[0]?.message?.content || answer;
+    } catch (e) {
+      console.error("OpenAI error:", e);
     }
   }
 
-  // 3️⃣ ОБЯЗАТЕЛЬНО
-  res.send("ok");
-});
+  // --- VK ---
+  await sendVK(message.peer_id, answer);
+}
 
-// ===== START =====
+// ===== SEND TO VK =====
+async function sendVK(peer_id, text) {
+  const params = new URLSearchParams({
+    peer_id: peer_id.toString(),
+    message: text,
+    random_id: Date.now().toString(),
+    access_token: VK_TOKEN,
+    v: "5.199"
+  });
+
+  const vkResponse = await fetch(
+    "https://api.vk.com/method/messages.send",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: params
+    }
+  );
+
+  const vkData = await vkResponse.json();
+  console.log("VK SEND RESPONSE:", vkData);
+}
+
+// ===== START SERVER =====
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server started on port", PORT);
