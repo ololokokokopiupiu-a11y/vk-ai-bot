@@ -17,13 +17,10 @@ console.log("OPENAI_API_KEY:", OPENAI_API_KEY ? "OK" : "MISSING");
 // ===== MEMORY & LIMITS =====
 const memory = {};
 const limits = {};
-// memory[userId] = { name, goal, history, step }
-// limits[userId] = { lastMessage, aiCount, day }
 
 // ===== SETTINGS =====
-const FLOOD_DELAY = 5000;
+const FLOOD_DELAY = 4000;
 const DAILY_AI_LIMIT = 10;
-const ALLOWED_REGEX = /(пп|питани|похуд|калор|кбжу|рецепт|белк|жир|углев|здоров)/i;
 
 // ===== CALLBACK =====
 app.post("/", (req, res) => {
@@ -38,7 +35,6 @@ app.post("/", (req, res) => {
   if (body.type === "message_new") {
     const message = body.object.message;
     if (message.from_id <= 0) return;
-
     handleMessage(message).catch(console.error);
   }
 });
@@ -47,101 +43,96 @@ app.post("/", (req, res) => {
 async function handleMessage(message) {
   const userId = message.from_id;
   const peerId = message.peer_id;
-  const text = message.text || "";
+  const text = (message.text || "").trim();
   const now = Date.now();
 
-  // --- limits init ---
+  // ---- limits ----
   if (!limits[userId]) {
-    limits[userId] = { lastMessage: 0, aiCount: 0, day: today() };
+    limits[userId] = { last: 0, count: 0, day: today() };
   }
 
-  if (now - limits[userId].lastMessage < FLOOD_DELAY) {
+  if (now - limits[userId].last < FLOOD_DELAY) {
     await sendVK(peerId, "Подожди пару секунд 🙂");
     return;
   }
-  limits[userId].lastMessage = now;
+  limits[userId].last = now;
 
   if (limits[userId].day !== today()) {
-    limits[userId].aiCount = 0;
+    limits[userId].count = 0;
     limits[userId].day = today();
   }
 
-  // --- memory init ---
+  // ---- memory ----
   if (!memory[userId]) {
-    memory[userId] = {
-      name: null,
-      goal: null,
-      history: [],
-      step: 0
-    };
+    memory[userId] = { name: null, goal: null, step: 0, history: [] };
   }
 
-  const userMemory = memory[userId];
+  const user = memory[userId];
 
   // ===== ONBOARDING =====
-  if (userMemory.step === 0) {
-    await sendVK(
-      peerId,
-      "Привет! Я ассистент по ПП питанию 🥗\nКак тебя зовут?"
-    );
-    userMemory.step = 1;
+  if (user.step === 0) {
+    await sendVK(peerId, "Привет! Я ассистент по правильному питанию.\nКак тебя зовут?");
+    user.step = 1;
     return;
   }
 
-  if (userMemory.step === 1) {
-    userMemory.name = text.trim();
+  if (user.step === 1) {
+    user.name = text;
     await sendVK(
       peerId,
-      `${userMemory.name}, приятно познакомиться 😊\nКакая у тебя цель?\n\n1️⃣ Похудеть\n2️⃣ ПП питание\n3️⃣ Поддерживать форму`
+      `${user.name}, приятно познакомиться.\nКакая цель?\n1 — похудеть\n2 — ПП питание\n3 — поддерживать форму`
     );
-    userMemory.step = 2;
+    user.step = 2;
     return;
   }
 
-  if (userMemory.step === 2) {
-    if (/1|похуд/i.test(text)) userMemory.goal = "похудение";
-    else if (/2|пп/i.test(text)) userMemory.goal = "ПП питание";
-    else userMemory.goal = "поддержание формы";
+  if (user.step === 2) {
+    if (/1|похуд/i.test(text)) user.goal = "похудение";
+    else if (/2|пп/i.test(text)) user.goal = "ПП питание";
+    else user.goal = "поддержание формы";
 
-    await sendVK(
-      peerId,
-      `Отлично 👍 Я запомнил.\nМожешь спросить меня, например:\n— ПП ужин\n— Рецепт из продуктов\n— КБЖУ завтрака`
-    );
-    userMemory.step = 3;
+    await sendVK(peerId, "Отлично 👍 Можешь писать продукты, рецепты или вопросы по питанию.");
+    user.step = 3;
     return;
   }
 
-  // ===== AFTER ONBOARDING =====
+  // ===== ПОСЛЕ ОНБОРДИНГА =====
 
-  if (!ALLOWED_REGEX.test(text)) {
-    await sendVK(
-      peerId,
-      "Я помогаю только с ПП питанием и похудением 🥗"
-    );
+  if (limits[userId].count >= DAILY_AI_LIMIT) {
+    await sendVK(peerId, "На сегодня лимит ответов исчерпан. Продолжим завтра 🙂");
     return;
   }
 
-  if (limits[userId].aiCount >= DAILY_AI_LIMIT) {
-    await sendVK(
-      peerId,
-      "На сегодня я уже дал максимум персональных ответов 😊\nПродолжим завтра!"
-    );
-    return;
-  }
+  // ---- Определяем список продуктов ----
+  const isProductList =
+    text.includes(",") ||
+    text.split(" ").length <= 7;
 
-  userMemory.history.push(text);
-  if (userMemory.history.length > 6) userMemory.history.shift();
+  user.history.push(text);
+  if (user.history.length > 5) user.history.shift();
 
   startTyping(peerId);
 
-  let answer = "Я пока не могу ответить 🤖";
+  let answer = "Я помогу с ПП питанием.";
 
   try {
     const systemPrompt = `
-Ты — персональный ассистент по ПП питанию.
-Имя: ${userMemory.name}
-Цель: ${userMemory.goal}
-Отвечай дружелюбно и по делу.
+Ты — дружелюбный персональный ассистент по ПП питанию.
+
+Имя пользователя: ${user.name}
+Цель: ${user.goal}
+
+ПРАВИЛА:
+- Ты отвечаешь ТОЛЬКО про питание, рецепты, похудение и здоровье
+- Если пользователь перечисляет продукты — предложи ПП-рецепт
+- Отвечай живо, тепло, не сухо
+- Если вопрос не по теме — мягко переведи в питание
+- В конце можно задать 1 уточняющий вопрос
+
+СТИЛЬ:
+- как живой диетолог
+- без отказов
+- без фраз "я не могу"
 `;
 
     const aiResponse = await fetch(
@@ -156,7 +147,7 @@ async function handleMessage(message) {
           model: "gpt-4o-mini",
           messages: [
             { role: "system", content: systemPrompt },
-            ...userMemory.history.map(t => ({ role: "user", content: t }))
+            { role: "user", content: isProductList ? `У меня есть: ${text}. Что можно приготовить?` : text }
           ]
         })
       }
@@ -164,10 +155,10 @@ async function handleMessage(message) {
 
     const aiData = await aiResponse.json();
     answer = aiData.choices?.[0]?.message?.content || answer;
-    limits[userId].aiCount++;
+    limits[userId].count++;
 
   } catch (e) {
-    console.error("OpenAI error:", e);
+    console.error(e);
   }
 
   await sendVK(peerId, answer);
@@ -183,7 +174,7 @@ function startTyping(peer_id) {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      peer_id: peer_id.toString(),
+      peer_id,
       type: "typing",
       access_token: VK_TOKEN,
       v: "5.199"
@@ -196,7 +187,7 @@ async function sendVK(peer_id, text) {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      peer_id: peer_id.toString(),
+      peer_id,
       message: text,
       random_id: Date.now().toString(),
       access_token: VK_TOKEN,
