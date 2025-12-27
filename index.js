@@ -80,17 +80,27 @@ async function handleMessage(message) {
 
 // ===== SEND TO VK =====
 async function sendVK(peer_id, text) {
+  const params = new URLSearchParams({
+    peer_id: peer_id.toString(),
+    message: text,
+    random_id: Date.now().toString(),
+    access_token: VK_TOKEN,
+    v: "5.199"
+  });
+
   const vkResponse = await fetch(
     "https://api.vk.com/method/messages.send",
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        peer_id,
-        message: text,
-        random_id: Date.now(),
-        access_token: VK_TOKEN,
-        v: "5.199"
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: params
+    }
+  );
+
+  const vkData = await vkResponse.json();
+  console.log("VK SEND RESPONSE:", vkData);
       })
     }
   );
