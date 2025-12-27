@@ -4,65 +4,64 @@ import fetch from "node-fetch";
 const app = express();
 app.use(express.json());
 
-// 🔴 ВСТАВЬ СВОЙ ТОКЕН СООБЩЕСТВА
-const VK_TOKEN = "vk1.a.ВСТАВЬ_СВОЙ_ТОКЕН_СЮДА";
+// ===== ENV =====
+const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
+const VK_TOKEN = process.env.VK_TOKEN;
 
-// 🔴 СТРОКА ПОДТВЕРЖДЕНИЯ
-const VK_CONFIRMATION = "cc9b1e12";
+// ===== ЛОГ ПРОВЕРКИ =====
+console.log("VK_TOKEN:", VK_TOKEN ? "OK" : "MISSING");
+console.log("VK_CONFIRMATION:", VK_CONFIRMATION ? "OK" : "MISSING");
 
+// ===== CALLBACK =====
 app.post("/", async (req, res) => {
   const body = req.body;
 
   console.log("EVENT TYPE:", body.type);
 
-  // подтверждение сервера
+  // 1️⃣ Подтверждение сервера
   if (body.type === "confirmation") {
-    return res.send(VK_CONFIRMATION);
+    return res.status(200).send(VK_CONFIRMATION);
   }
 
+  // 2️⃣ Новое сообщение
   if (body.type === "message_new") {
-    const msg = body.object.message;
+    const message = body.object.message;
 
-    // защита от бота
-    if (msg.from_id <= 0) {
+    // ❗ защита от ботов / групп
+    if (message.from_id <= 0) {
       return res.send("ok");
     }
 
-    const params = new URLSearchParams({
-      peer_id: msg.peer_id.toString(),
-      message: "Бот жив и отвечает ✅",
-      random_id: Date.now().toString(),
-      access_token: VK_TOKEN,
-      v: "5.199"
-    });
-
     try {
-      const response = await fetch(
+      const vkResponse = await fetch(
         "https://api.vk.com/method/messages.send",
         {
           method: "POST",
           headers: {
-            "Content-Type": "application/x-www-form-urlencoded"
+            "Content-Type": "application/x-www-form-urlencoded",
           },
-          body: params
+          body: new URLSearchParams({
+            peer_id: message.from_id.toString(),
+            message: "Бот жив и отвечает ✅",
+            random_id: Date.now().toString(),
+            access_token: VK_TOKEN,
+            v: "5.199",
+          }),
         }
       );
 
-      const data = await response.json();
-      console.log("VK SEND RESPONSE:", data);
-
-    } catch (e) {
-      console.error("SEND ERROR:", e);
+      const vkData = await vkResponse.json();
+      console.log("VK SEND RESPONSE:", vkData);
+    } catch (err) {
+      console.error("VK ERROR:", err);
     }
   }
 
+  // 3️⃣ ОБЯЗАТЕЛЬНО
   res.send("ok");
 });
 
-app.get("/", (req, res) => {
-  res.send("OK");
-});
-
+// ===== START =====
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server started on port", PORT);
