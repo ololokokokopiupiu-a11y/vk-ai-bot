@@ -14,10 +14,15 @@ console.log("VK_TOKEN:", VK_TOKEN ? "OK" : "MISSING");
 console.log("VK_CONFIRMATION:", VK_CONFIRMATION ? "OK" : "MISSING");
 console.log("OPENAI_API_KEY:", OPENAI_API_KEY ? "OK" : "MISSING");
 
-// ===== MEMORY =====
+// ===== MEMORY & LIMITS =====
 const memory = {};
+const limits = {};
+// memory[userId] = { name, goal, history, step }
+// limits[userId] = { lastMessage, aiCount, day }
 
-// ===== ALLOWED TOPICS =====
+// ===== SETTINGS =====
+const FLOOD_DELAY = 5000;
+const DAILY_AI_LIMIT = 10;
 const ALLOWED_REGEX = /(пп|питани|похуд|калор|кбжу|рецепт|белк|жир|углев|здоров)/i;
 
 // ===== CALLBACK =====
@@ -43,46 +48,100 @@ async function handleMessage(message) {
   const userId = message.from_id;
   const peerId = message.peer_id;
   const text = message.text || "";
+  const now = Date.now();
 
-  // --- topic filter ---
-  if (!ALLOWED_REGEX.test(text)) {
-    await sendVK(
-      peerId,
-      "Я помогаю только с ПП питанием, похудением и рецептами 🥗\nНапиши, например: «ПП ужин», «Как похудеть», «КБЖУ завтрака»"
-    );
-    return;
+  // --- limits init ---
+  if (!limits[userId]) {
+    limits[userId] = { lastMessage: 0, aiCount: 0, day: today() };
   }
 
-  // --- init memory ---
+  if (now - limits[userId].lastMessage < FLOOD_DELAY) {
+    await sendVK(peerId, "Подожди пару секунд 🙂");
+    return;
+  }
+  limits[userId].lastMessage = now;
+
+  if (limits[userId].day !== today()) {
+    limits[userId].aiCount = 0;
+    limits[userId].day = today();
+  }
+
+  // --- memory init ---
   if (!memory[userId]) {
-    memory[userId] = { name: null, goal: null, history: [] };
+    memory[userId] = {
+      name: null,
+      goal: null,
+      history: [],
+      step: 0
+    };
   }
 
   const userMemory = memory[userId];
 
-  // --- name ---
-  const nameMatch = text.match(/меня зовут\s+(\w+)/i);
-  if (nameMatch) userMemory.name = nameMatch[1];
+  // ===== ONBOARDING =====
+  if (userMemory.step === 0) {
+    await sendVK(
+      peerId,
+      "Привет! Я ассистент по ПП питанию 🥗\nКак тебя зовут?"
+    );
+    userMemory.step = 1;
+    return;
+  }
 
-  // --- goal ---
-  if (/похуд/i.test(text)) userMemory.goal = "похудение";
-  if (/пп|правиль/i.test(text)) userMemory.goal = "ПП питание";
+  if (userMemory.step === 1) {
+    userMemory.name = text.trim();
+    await sendVK(
+      peerId,
+      `${userMemory.name}, приятно познакомиться 😊\nКакая у тебя цель?\n\n1️⃣ Похудеть\n2️⃣ ПП питание\n3️⃣ Поддерживать форму`
+    );
+    userMemory.step = 2;
+    return;
+  }
 
-  // --- history ---
+  if (userMemory.step === 2) {
+    if (/1|похуд/i.test(text)) userMemory.goal = "похудение";
+    else if (/2|пп/i.test(text)) userMemory.goal = "ПП питание";
+    else userMemory.goal = "поддержание формы";
+
+    await sendVK(
+      peerId,
+      `Отлично 👍 Я запомнил.\nМожешь спросить меня, например:\n— ПП ужин\n— Рецепт из продуктов\n— КБЖУ завтрака`
+    );
+    userMemory.step = 3;
+    return;
+  }
+
+  // ===== AFTER ONBOARDING =====
+
+  if (!ALLOWED_REGEX.test(text)) {
+    await sendVK(
+      peerId,
+      "Я помогаю только с ПП питанием и похудением 🥗"
+    );
+    return;
+  }
+
+  if (limits[userId].aiCount >= DAILY_AI_LIMIT) {
+    await sendVK(
+      peerId,
+      "На сегодня я уже дал максимум персональных ответов 😊\nПродолжим завтра!"
+    );
+    return;
+  }
+
   userMemory.history.push(text);
   if (userMemory.history.length > 6) userMemory.history.shift();
 
-  // typing
   startTyping(peerId);
 
   let answer = "Я пока не могу ответить 🤖";
 
   try {
     const systemPrompt = `
-Ты — профессиональный ассистент по ПП питанию и похудению.
-Всегда отвечай ТОЛЬКО в рамках темы питания.
-Имя: ${userMemory.name || "не указано"}
-Цель: ${userMemory.goal || "не указана"}
+Ты — персональный ассистент по ПП питанию.
+Имя: ${userMemory.name}
+Цель: ${userMemory.goal}
+Отвечай дружелюбно и по делу.
 `;
 
     const aiResponse = await fetch(
@@ -105,6 +164,7 @@ async function handleMessage(message) {
 
     const aiData = await aiResponse.json();
     answer = aiData.choices?.[0]?.message?.content || answer;
+    limits[userId].aiCount++;
 
   } catch (e) {
     console.error("OpenAI error:", e);
@@ -113,7 +173,11 @@ async function handleMessage(message) {
   await sendVK(peerId, answer);
 }
 
-// ===== TYPING =====
+// ===== HELPERS =====
+function today() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function startTyping(peer_id) {
   fetch("https://api.vk.com/method/messages.setActivity", {
     method: "POST",
@@ -127,7 +191,6 @@ function startTyping(peer_id) {
   }).catch(() => {});
 }
 
-// ===== SEND =====
 async function sendVK(peer_id, text) {
   await fetch("https://api.vk.com/method/messages.send", {
     method: "POST",
