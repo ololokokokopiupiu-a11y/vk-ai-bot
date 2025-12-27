@@ -9,14 +9,16 @@ const VK_TOKEN = process.env.VK_TOKEN;
 const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// ===== ПРОВЕРКА =====
+// ===== LOG =====
 console.log("VK_TOKEN:", VK_TOKEN ? "OK" : "MISSING");
 console.log("VK_CONFIRMATION:", VK_CONFIRMATION ? "OK" : "MISSING");
 console.log("OPENAI_API_KEY:", OPENAI_API_KEY ? "OK" : "MISSING");
 
-// ===== ПАМЯТЬ (RAM) =====
-const memory = {}; 
-// memory[userId] = { name, goal, history: [] }
+// ===== MEMORY =====
+const memory = {};
+
+// ===== ALLOWED TOPICS =====
+const ALLOWED_REGEX = /(пп|питани|похуд|калор|кбжу|рецепт|белк|жир|углев|здоров)/i;
 
 // ===== CALLBACK =====
 app.post("/", (req, res) => {
@@ -39,44 +41,48 @@ app.post("/", (req, res) => {
 // ===== MESSAGE HANDLER =====
 async function handleMessage(message) {
   const userId = message.from_id;
-  const userText = message.text || "";
+  const peerId = message.peer_id;
+  const text = message.text || "";
 
-  // --- инициализация памяти ---
+  // --- topic filter ---
+  if (!ALLOWED_REGEX.test(text)) {
+    await sendVK(
+      peerId,
+      "Я помогаю только с ПП питанием, похудением и рецептами 🥗\nНапиши, например: «ПП ужин», «Как похудеть», «КБЖУ завтрака»"
+    );
+    return;
+  }
+
+  // --- init memory ---
   if (!memory[userId]) {
-    memory[userId] = {
-      name: null,
-      goal: null,
-      history: []
-    };
+    memory[userId] = { name: null, goal: null, history: [] };
   }
 
   const userMemory = memory[userId];
 
-  // --- простое извлечение имени ---
-  const nameMatch = userText.match(/меня зовут\s+(\w+)/i);
-  if (nameMatch) {
-    userMemory.name = nameMatch[1];
-  }
+  // --- name ---
+  const nameMatch = text.match(/меня зовут\s+(\w+)/i);
+  if (nameMatch) userMemory.name = nameMatch[1];
 
-  // --- цель ---
-  if (/похуд/i.test(userText)) userMemory.goal = "похудение";
-  if (/пп|правиль/i.test(userText)) userMemory.goal = "ПП питание";
+  // --- goal ---
+  if (/похуд/i.test(text)) userMemory.goal = "похудение";
+  if (/пп|правиль/i.test(text)) userMemory.goal = "ПП питание";
 
-  // --- история (ограничиваем) ---
-  userMemory.history.push(userText);
-  if (userMemory.history.length > 6) {
-    userMemory.history.shift();
-  }
+  // --- history ---
+  userMemory.history.push(text);
+  if (userMemory.history.length > 6) userMemory.history.shift();
+
+  // typing
+  startTyping(peerId);
 
   let answer = "Я пока не могу ответить 🤖";
 
-  // --- OpenAI ---
   try {
     const systemPrompt = `
-Ты — дружелюбный ассистент по ПП питанию и похудению.
-Имя пользователя: ${userMemory.name || "неизвестно"}
-Цель пользователя: ${userMemory.goal || "не указана"}
-Отвечай тепло, по-человечески, кратко.
+Ты — профессиональный ассистент по ПП питанию и похудению.
+Всегда отвечай ТОЛЬКО в рамках темы питания.
+Имя: ${userMemory.name || "не указано"}
+Цель: ${userMemory.goal || "не указана"}
 `;
 
     const aiResponse = await fetch(
@@ -91,10 +97,7 @@ async function handleMessage(message) {
           model: "gpt-4o-mini",
           messages: [
             { role: "system", content: systemPrompt },
-            ...userMemory.history.map(t => ({
-              role: "user",
-              content: t
-            }))
+            ...userMemory.history.map(t => ({ role: "user", content: t }))
           ]
         })
       }
@@ -107,23 +110,35 @@ async function handleMessage(message) {
     console.error("OpenAI error:", e);
   }
 
-  await sendVK(message.peer_id, answer);
+  await sendVK(peerId, answer);
 }
 
-// ===== SEND TO VK =====
-async function sendVK(peer_id, text) {
-  const params = new URLSearchParams({
-    peer_id: peer_id.toString(),
-    message: text,
-    random_id: Date.now().toString(),
-    access_token: VK_TOKEN,
-    v: "5.199"
-  });
+// ===== TYPING =====
+function startTyping(peer_id) {
+  fetch("https://api.vk.com/method/messages.setActivity", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      peer_id: peer_id.toString(),
+      type: "typing",
+      access_token: VK_TOKEN,
+      v: "5.199"
+    })
+  }).catch(() => {});
+}
 
+// ===== SEND =====
+async function sendVK(peer_id, text) {
   await fetch("https://api.vk.com/method/messages.send", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: params
+    body: new URLSearchParams({
+      peer_id: peer_id.toString(),
+      message: text,
+      random_id: Date.now().toString(),
+      access_token: VK_TOKEN,
+      v: "5.199"
+    })
   });
 }
 
