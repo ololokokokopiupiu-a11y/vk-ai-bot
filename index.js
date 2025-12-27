@@ -19,8 +19,32 @@ const memory = {};
 const limits = {};
 
 // ===== SETTINGS =====
-const FLOOD_DELAY = 4000;
+const FLOOD_DELAY = 5000;
 const DAILY_AI_LIMIT = 10;
+const ALLOWED_REGEX = /(пп|питани|похуд|калор|кбжу|рецепт|белк|жир|углев|здоров|еда|завтрак|обед|ужин)/i;
+
+// ===== PHRASES =====
+const GREETINGS = [
+  "Рад помочь с питанием.",
+  "Хорошо, давай разберём питание.",
+  "Всегда на связи по вопросам ПП."
+];
+
+const ENDINGS = [
+  "Если понадобится другой приём пищи — подскажу.",
+  "Можно рассчитать КБЖУ этого варианта.",
+  "Подберу ещё варианты в рамках ПП.",
+  "Помогу скорректировать под твою цель."
+];
+
+const THANKS_ANSWERS = [
+  "Рад был помочь.",
+  "Приятно быть полезным.",
+  "Хорошо, что смог помочь.",
+  "Обращайся, если понадобится помощь с питанием."
+];
+
+const THANKS_REGEX = /(спасибо|благодарю|ты помог|было полезно|понятно, спасибо)/i;
 
 // ===== CALLBACK =====
 app.post("/", (req, res) => {
@@ -35,6 +59,7 @@ app.post("/", (req, res) => {
   if (body.type === "message_new") {
     const message = body.object.message;
     if (message.from_id <= 0) return;
+
     handleMessage(message).catch(console.error);
   }
 });
@@ -46,93 +71,113 @@ async function handleMessage(message) {
   const text = (message.text || "").trim();
   const now = Date.now();
 
-  // ---- limits ----
+  // --- limits init ---
   if (!limits[userId]) {
-    limits[userId] = { last: 0, count: 0, day: today() };
+    limits[userId] = { lastMessage: 0, aiCount: 0, day: today() };
   }
 
-  if (now - limits[userId].last < FLOOD_DELAY) {
-    await sendVK(peerId, "Подожди пару секунд 🙂");
+  if (now - limits[userId].lastMessage < FLOOD_DELAY) {
+    await sendVK(peerId, "Подожди пару секунд.");
     return;
   }
-  limits[userId].last = now;
+  limits[userId].lastMessage = now;
 
   if (limits[userId].day !== today()) {
-    limits[userId].count = 0;
+    limits[userId].aiCount = 0;
     limits[userId].day = today();
   }
 
-  // ---- memory ----
+  // --- memory init ---
   if (!memory[userId]) {
-    memory[userId] = { name: null, goal: null, step: 0, history: [] };
+    memory[userId] = {
+      name: null,
+      goal: null,
+      history: [],
+      step: 0
+    };
   }
 
-  const user = memory[userId];
+  const userMemory = memory[userId];
 
   // ===== ONBOARDING =====
-  if (user.step === 0) {
-    await sendVK(peerId, "Привет! Я ассистент по правильному питанию.\nКак тебя зовут?");
-    user.step = 1;
+  if (userMemory.step === 0) {
+    await sendVK(peerId, "Привет. Я ассистент по правильному питанию. Как тебя зовут?");
+    userMemory.step = 1;
     return;
   }
 
-  if (user.step === 1) {
-    user.name = text;
+  if (userMemory.step === 1) {
+    userMemory.name = text;
     await sendVK(
       peerId,
-      `${user.name}, приятно познакомиться.\nКакая цель?\n1 — похудеть\n2 — ПП питание\n3 — поддерживать форму`
+      `${userMemory.name}, приятно познакомиться. Какая у тебя цель?\n1 — Похудеть\n2 — ПП питание\n3 — Поддерживать форму`
     );
-    user.step = 2;
+    userMemory.step = 2;
     return;
   }
 
-  if (user.step === 2) {
-    if (/1|похуд/i.test(text)) user.goal = "похудение";
-    else if (/2|пп/i.test(text)) user.goal = "ПП питание";
-    else user.goal = "поддержание формы";
+  if (userMemory.step === 2) {
+    if (/1|похуд/i.test(text)) userMemory.goal = "похудение";
+    else if (/2|пп/i.test(text)) userMemory.goal = "ПП питание";
+    else userMemory.goal = "поддержание формы";
 
-    await sendVK(peerId, "Отлично 👍 Можешь писать продукты, рецепты или вопросы по питанию.");
-    user.step = 3;
+    await sendVK(
+      peerId,
+      `${GREETINGS[Math.floor(Math.random() * GREETINGS.length)]} Можешь написать продукты или приём пищи.`
+    );
+    userMemory.step = 3;
     return;
   }
 
-  // ===== ПОСЛЕ ОНБОРДИНГА =====
+  // ===== THANKS HANDLER =====
+  if (THANKS_REGEX.test(text)) {
+    const reply =
+      THANKS_ANSWERS[Math.floor(Math.random() * THANKS_ANSWERS.length)] +
+      " " +
+      ENDINGS[Math.floor(Math.random() * ENDINGS.length)];
 
-  if (limits[userId].count >= DAILY_AI_LIMIT) {
-    await sendVK(peerId, "На сегодня лимит ответов исчерпан. Продолжим завтра 🙂");
+    await sendVK(peerId, reply);
     return;
   }
 
-  // ---- Определяем список продуктов ----
-  const isProductList =
-    text.includes(",") ||
-    text.split(" ").length <= 7;
+  // ===== TOPIC FILTER =====
+  if (!ALLOWED_REGEX.test(text)) {
+    await sendVK(peerId, "Я помогаю только с вопросами питания, ПП и похудения.");
+    return;
+  }
 
-  user.history.push(text);
-  if (user.history.length > 5) user.history.shift();
+  if (limits[userId].aiCount >= DAILY_AI_LIMIT) {
+    await sendVK(peerId, "На сегодня лимит персональных ответов исчерпан. Продолжим завтра.");
+    return;
+  }
+
+  userMemory.history.push(text);
+  if (userMemory.history.length > 6) userMemory.history.shift();
 
   startTyping(peerId);
 
-  let answer = "Я помогу с ПП питанием.";
+  let answer = "Пока не могу сформировать ответ.";
 
   try {
     const systemPrompt = `
-Ты — дружелюбный персональный ассистент по ПП питанию.
+Ты — персональный ассистент по правильному питанию.
 
-Имя пользователя: ${user.name}
-Цель: ${user.goal}
-
-ПРАВИЛА:
-- Ты отвечаешь ТОЛЬКО про питание, рецепты, похудение и здоровье
-- Если пользователь перечисляет продукты — предложи ПП-рецепт
-- Отвечай живо, тепло, не сухо
-- Если вопрос не по теме — мягко переведи в питание
-- В конце можно задать 1 уточняющий вопрос
+Имя пользователя: ${userMemory.name}
+Цель пользователя: ${userMemory.goal}
 
 СТИЛЬ:
 - как живой диетолог
-- без отказов
-- без фраз "я не могу"
+- не сухо, но по делу
+- используй продукты, которые перечислил пользователь
+- объясняй простым языком
+
+ОГРАНИЧЕНИЯ:
+- отвечай только про питание, ПП, похудение, КБЖУ
+
+ЗАВЕРШЕНИЕ:
+- каждый ответ заканчивай одной спокойной фразой
+- без вопросительных знаков
+- не навязывайся
 `;
 
     const aiResponse = await fetch(
@@ -147,7 +192,7 @@ async function handleMessage(message) {
           model: "gpt-4o-mini",
           messages: [
             { role: "system", content: systemPrompt },
-            { role: "user", content: isProductList ? `У меня есть: ${text}. Что можно приготовить?` : text }
+            ...userMemory.history.map(t => ({ role: "user", content: t }))
           ]
         })
       }
@@ -155,10 +200,10 @@ async function handleMessage(message) {
 
     const aiData = await aiResponse.json();
     answer = aiData.choices?.[0]?.message?.content || answer;
-    limits[userId].count++;
+    limits[userId].aiCount++;
 
   } catch (e) {
-    console.error(e);
+    console.error("OpenAI error:", e);
   }
 
   await sendVK(peerId, answer);
@@ -174,7 +219,7 @@ function startTyping(peer_id) {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      peer_id,
+      peer_id: peer_id.toString(),
       type: "typing",
       access_token: VK_TOKEN,
       v: "5.199"
@@ -187,7 +232,7 @@ async function sendVK(peer_id, text) {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      peer_id,
+      peer_id: peer_id.toString(),
       message: text,
       random_id: Date.now().toString(),
       access_token: VK_TOKEN,
