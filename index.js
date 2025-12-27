@@ -4,15 +4,16 @@ import fetch from "node-fetch";
 const app = express();
 app.use(express.json());
 
-const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
 const VK_TOKEN = process.env.VK_TOKEN;
+const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 console.log("VK_TOKEN:", VK_TOKEN ? "OK" : "MISSING");
 console.log("VK_CONFIRMATION:", VK_CONFIRMATION ? "OK" : "MISSING");
+console.log("OPENAI_API_KEY:", OPENAI_API_KEY ? "OK" : "MISSING");
 
 app.post("/", async (req, res) => {
   const body = req.body;
-
   console.log("EVENT TYPE:", body.type);
 
   // 1. Confirmation
@@ -20,40 +21,59 @@ app.post("/", async (req, res) => {
     return res.send(VK_CONFIRMATION);
   }
 
-  // 2. New message
+  // 2. Новое сообщение
   if (body.type === "message_new") {
     const message = body.object.message;
 
-    // не отвечаем на сервисные события
-    if (!message || message.from_id <= 0) {
+    // не отвечаем сами себе и сообществам
+    if (message.from_id <= 0) {
       return res.send("ok");
     }
 
+    const userText = message.text || "…";
+
     try {
-      const params = new URLSearchParams({
-        peer_id: message.peer_id.toString(),
-        message: "Привет 👋 Я жив",
-        random_id: Date.now().toString(),
-        access_token: VK_TOKEN,
-        v: "5.199"
+      // === ЗАПРОС В CHATGPT ===
+      const aiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${OPENAI_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages: [
+            { role: "system", content: "Ты дружелюбный VK-бот и отвечаешь кратко и понятно." },
+            { role: "user", content: userText }
+          ]
+        })
       });
 
-      const response = await fetch(
+      const aiData = await aiResponse.json();
+      const answer =
+        aiData.choices?.[0]?.message?.content || "Я пока не могу ответить 🤖";
+
+      // === ОТПРАВКА В VK ===
+      const vkResponse = await fetch(
         "https://api.vk.com/method/messages.send",
         {
           method: "POST",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded"
-          },
-          body: params
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            peer_id: message.peer_id,
+            message: answer,
+            random_id: Date.now(),
+            access_token: VK_TOKEN,
+            v: "5.199"
+          })
         }
       );
 
-      const data = await response.json();
-      console.log("VK SEND RESPONSE:", data);
+      const vkData = await vkResponse.json();
+      console.log("VK SEND RESPONSE:", vkData);
 
     } catch (e) {
-      console.error("VK ERROR:", e);
+      console.error("ERROR:", e);
     }
   }
 
