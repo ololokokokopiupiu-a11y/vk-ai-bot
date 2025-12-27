@@ -30,18 +30,22 @@ app.post("/", async (req, res) => {
     }
 
     try {
+      const params = new URLSearchParams({
+        peer_id: message.peer_id.toString(),
+        message: "Бот снова жив ✅",
+        random_id: Date.now().toString(),
+        access_token: VK_TOKEN,
+        v: "5.199"
+      });
+
       const vkResponse = await fetch(
         "https://api.vk.com/method/messages.send",
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            peer_id: message.peer_id,
-            message: "Бот снова жив ✅",
-            random_id: Date.now(),
-            access_token: VK_TOKEN,
-            v: "5.199"
-          })
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded"
+          },
+          body: params
         }
       );
 
