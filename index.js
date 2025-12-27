@@ -101,12 +101,6 @@ async function sendVK(peer_id, text) {
 
   const vkData = await vkResponse.json();
   console.log("VK SEND RESPONSE:", vkData);
-      })
-    }
-  );
-
-  const vkData = await vkResponse.json();
-  console.log("VK SEND RESPONSE:", vkData);
 }
 
 // ===== START SERVER =====
