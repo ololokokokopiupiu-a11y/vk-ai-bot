@@ -18,15 +18,15 @@ app.post("/", (req, res) => {
   const body = req.body;
   console.log("EVENT TYPE:", body.type);
 
-  // 1. Confirmation
+  // 1️⃣ Confirmation
   if (body.type === "confirmation") {
     return res.send(VK_CONFIRMATION);
   }
 
-  // 2. VK должен получить OK сразу
+  // 2️⃣ VK должен получить OK сразу
   res.send("ok");
 
-  // 3. Обработка сообщения асинхронно
+  // 3️⃣ Обработка сообщения асинхронно
   if (body.type === "message_new") {
     const message = body.object.message;
 
@@ -39,8 +39,32 @@ app.post("/", (req, res) => {
   }
 });
 
+// ===== TYPING =====
+async function sendTyping(peer_id) {
+  await fetch("https://api.vk.com/method/messages.setActivity", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body: new URLSearchParams({
+      peer_id: peer_id.toString(),
+      type: "typing",
+      access_token: VK_TOKEN,
+      v: "5.199"
+    })
+  });
+}
+
 // ===== MESSAGE HANDLER =====
 async function handleMessage(message) {
+  // 🔹 typing СРАЗУ
+  await sendTyping(message.peer_id);
+
+  // 🔹 обновляем typing, если OpenAI думает долго
+  const typingInterval = setInterval(() => {
+    sendTyping(message.peer_id);
+  }, 4000);
+
   const userText = message.text || "…";
   let answer = "Я пока не могу ответить 🤖";
 
@@ -57,8 +81,12 @@ async function handleMessage(message) {
           },
           body: JSON.stringify({
             model: "gpt-4o-mini",
+            max_tokens: 200,
             messages: [
-              { role: "system", content: "Ты дружелюбный VK-бот и отвечаешь кратко." },
+              {
+                role: "system",
+                content: "Ты дружелюбный VK-бот и отвечаешь кратко и понятно."
+              },
               { role: "user", content: userText }
             ]
           })
@@ -67,10 +95,14 @@ async function handleMessage(message) {
 
       const aiData = await aiResponse.json();
       answer = aiData.choices?.[0]?.message?.content || answer;
+
     } catch (e) {
       console.error("OpenAI error:", e);
     }
   }
+
+  // 🔹 останавливаем typing
+  clearInterval(typingInterval);
 
   // --- VK ---
   await sendVK(message.peer_id, answer);
