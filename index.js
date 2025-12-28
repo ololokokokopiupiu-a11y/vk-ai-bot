@@ -21,17 +21,17 @@ const limits = {};
 // ===== SETTINGS =====
 const FLOOD_DELAY = 5000;
 const DAILY_AI_LIMIT = 10;
-const ALLOWED_REGEX = /(пп|питани|похуд|калор|кбжу|рецепт|белк|жир|углев|здоров|еда|завтрак|обед|ужин)/i;
+const ALLOWED_REGEX =
+  /(пп|питани|похуд|калор|кбжу|рецепт|белк|жир|углев|еда|завтрак|обед|ужин|греч|куриц|яйц|овощ|фрукт|рис|мясо|рыб|творог)/i;
 
 // ===== PHRASES =====
 const GREETINGS = [
-  "Рад помочь с питанием.",
   "Хорошо, давай разберём питание.",
-  "Всегда на связи по вопросам ПП."
+  "Рад помочь с ПП питанием.",
+  "Можем подобрать вариант из продуктов."
 ];
 
 const ENDINGS = [
-  "Если понадобится другой приём пищи — подскажу.",
   "Можно рассчитать КБЖУ этого варианта.",
   "Подберу ещё варианты в рамках ПП.",
   "Помогу скорректировать под твою цель."
@@ -40,11 +40,10 @@ const ENDINGS = [
 const THANKS_ANSWERS = [
   "Рад был помочь.",
   "Приятно быть полезным.",
-  "Хорошо, что смог помочь.",
-  "Обращайся, если понадобится помощь с питанием."
+  "Хорошо, что смог помочь."
 ];
 
-const THANKS_REGEX = /(спасибо|благодарю|ты помог|было полезно|понятно, спасибо)/i;
+const THANKS_REGEX = /(спасибо|благодарю|ты помог|было полезно)/i;
 
 // ===== CALLBACK =====
 app.post("/", (req, res) => {
@@ -123,53 +122,58 @@ async function handleMessage(message) {
 
     await sendVK(
       peerId,
-      `${GREETINGS[Math.floor(Math.random() * GREETINGS.length)]} Можешь написать продукты или приём пищи.`
+      `${GREETINGS[Math.floor(Math.random() * GREETINGS.length)]} Напиши продукты, которые есть дома.`
     );
     userMemory.step = 3;
     return;
   }
 
-  // ===== THANKS HANDLER =====
+  // ===== THANKS =====
   if (THANKS_REGEX.test(text)) {
     const reply =
       THANKS_ANSWERS[Math.floor(Math.random() * THANKS_ANSWERS.length)] +
       " " +
       ENDINGS[Math.floor(Math.random() * ENDINGS.length)];
-
     await sendVK(peerId, reply);
     return;
   }
 
   // ===== TOPIC FILTER =====
   if (!ALLOWED_REGEX.test(text)) {
-    await sendVK(peerId, "Я помогаю только с вопросами питания, ПП и похудения.");
+    await sendVK(peerId, "Я помогаю только с вопросами ПП питания и похудения.");
     return;
   }
 
   if (limits[userId].aiCount >= DAILY_AI_LIMIT) {
-    await sendVK(peerId, "На сегодня лимит персональных ответов исчерпан. Продолжим завтра.");
+    await sendVK(peerId, "На сегодня лимит персональных ответов исчерпан.");
     return;
   }
 
+  // ===== HISTORY =====
   userMemory.history.push(text);
   if (userMemory.history.length > 6) userMemory.history.shift();
 
   startTyping(peerId);
 
-  let answer = "Пока не могу сформировать ответ.";
+  let answer = "Не удалось сформировать ответ.";
 
   try {
     const systemPrompt = `
-Ты — персональный ассистент по правильному питанию.
+Ты — персональный ассистент по правильному питанию и похудению.
 
 Имя пользователя: ${userMemory.name}
 Цель пользователя: ${userMemory.goal}
 
+ВАЖНО:
+- Если пользователь перечисляет продукты через запятую, пробел или списком — считай это продуктами, которые есть у него дома
+- Используй ТОЛЬКО эти продукты
+- Не добавляй ничего лишнего
+- Можно использовать базовые вещи: соль, вода, специи
+
 СТИЛЬ:
 - как живой диетолог
-- не сухо, но по делу
-- используй продукты, которые перечислил пользователь
-- объясняй простым языком
+- не сухо
+- спокойно и понятно
 
 ОГРАНИЧЕНИЯ:
 - отвечай только про питание, ПП, похудение, КБЖУ
@@ -177,7 +181,6 @@ async function handleMessage(message) {
 ЗАВЕРШЕНИЕ:
 - каждый ответ заканчивай одной спокойной фразой
 - без вопросительных знаков
-- не навязывайся
 `;
 
     const aiResponse = await fetch(
