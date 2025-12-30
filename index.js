@@ -96,30 +96,30 @@ async function handleMessage(message) {
   }
 
   // ===== ONBOARDING =====
-  if (user.step === 0) {
-    user.step = 1;
-    saveMemory();
-    return sendVK(peerId, "Привет 😊 Я Анна. Как тебя зовут?");
-  }
+if (!hasName && user.step === 0) {
+  user.step = 1;
+  saveMemory();
+  return sendVK(peerId, "Привет 😊 Я Анна. Как тебя зовут?");
+}
 
-  if (user.step === 1) {
-    user.name = text;
-    user.step = 2;
-    saveMemory();
-    return sendVK(
-      peerId,
-      `${user.name}, приятно познакомиться 💚\nКакая у тебя цель?\n1️⃣ Похудеть\n2️⃣ ПП питание\n3️⃣ Поддерживать форму`
-    );
-  }
+if (!hasName && user.step === 1) {
+  user.name = text;
+  user.step = 2;
+  saveMemory();
+  return sendVK(
+    peerId,
+    `${user.name}, приятно познакомиться 💚\nКакая у тебя цель?\n1️⃣ Похудеть\n2️⃣ ПП питание\n3️⃣ Поддерживать форму`
+  );
+}
 
-  if (user.step === 2) {
-    user.step = 3;
-    saveMemory();
-    return sendVK(
-      peerId,
-      "Отлично 👍 Тогда пиши продукты или задавай вопросы — я рядом 🥗"
-    );
-  }
+if (hasName && user.step === 2) {
+  user.step = 3;
+  saveMemory();
+  return sendVK(
+    peerId,
+    "Отлично 👍 Тогда пиши продукты или задавай вопросы — я рядом 🥗"
+  );
+}
 
   // ===== MENU (VIP ONLY) =====
   if (MENU_REGEX.test(text)) {
