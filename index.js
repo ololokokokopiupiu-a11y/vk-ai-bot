@@ -5,107 +5,58 @@ import fs from "fs";
 const app = express();
 app.use(express.json());
 
-// ===== FILE STORAGE =====
+// ===== STORAGE =====
 const MEMORY_FILE = "./memory.json";
 let memory = fs.existsSync(MEMORY_FILE)
   ? JSON.parse(fs.readFileSync(MEMORY_FILE, "utf8"))
   : {};
 
-function saveMemory() {
+const saveMemory = () =>
   fs.writeFileSync(MEMORY_FILE, JSON.stringify(memory, null, 2));
-}
 
 // ===== ENV =====
 const VK_TOKEN = process.env.VK_TOKEN;
 const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// ===== DONUT LEVELS =====
-const DONUT_LEVELS = {
-  3255: "base",
-  3256: "pro",
-  3257: "vip"
-};
-
-// ===== TARIFF LINKS =====
-const TARIFF_LINKS = {
-  base: "https://vk.com/pp_recepty_vk?w=donut_payment-234876171&levelId=3255",
-  pro: "https://vk.com/pp_recepty_vk?w=donut_payment-234876171&levelId=3256",
-  vip: "https://vk.com/pp_recepty_vk?w=donut_payment-234876171&levelId=3257"
-};
-
 // ===== LIMITS =====
-const DAILY_LIMITS = {
-  base: 3,
-  pro: 5,
-  vip: Infinity
-};
-
 const limits = {};
+const DAILY_AI_LIMIT = 10;
 const FLOOD_DELAY = 4000;
 
 // ===== REGEX =====
-const MENU_REGEX = /(меню на|меню|недел|месяц)/i;
-const ALLOWED_REGEX = /(пп|питани|похуд|калор|кбжу|рецепт|продукт|меню)/i;
+const MENU_REGEX = /(меню).*(недел|7)/i;
+const ALLOWED_REGEX =
+  /(пп|питани|похуд|калор|кбжу|рецепт|белк|жир|углев|завтрак|обед|ужин|меню|продукт)/i;
+
+const ABOUT_REGEX = /(ты кто|кто ты|как тебя зовут)/i;
+const THANKS_REGEX = /(спасибо|благодарю)/i;
 
 // ===== CALLBACK =====
-app.post("/", async (req, res) => {
+app.post("/", (req, res) => {
   const body = req.body;
 
-  if (body.type === "confirmation") {
-    return res.send(VK_CONFIRMATION);
-  }
-
+  if (body.type === "confirmation") return res.send(VK_CONFIRMATION);
   res.send("ok");
 
-  // ===== DONUT EVENTS =====
-  if (body.type.startsWith("donut_")) {
-    const userId = body.object.user_id;
-    const levelId = body.object.level?.id;
-
-    if (!memory[userId]) {
-      memory[userId] = { name: null, goal: null, tariff: "base" };
-    }
-
-    if (body.type === "donut_subscription_expired" || body.type === "donut_subscription_cancelled") {
-      memory[userId].tariff = "base";
-    }
-
-    if (levelId && DONUT_LEVELS[levelId]) {
-      memory[userId].tariff = DONUT_LEVELS[levelId];
-    }
-
-    saveMemory();
-    return;
-  }
-
-  // ===== MESSAGES =====
   if (body.type === "message_new") {
-    handleMessage(body.object.message).catch(console.error);
+    const msg = body.object.message;
+    if (msg.from_id > 0) handleMessage(msg).catch(console.error);
   }
 });
 
-// ===== MESSAGE HANDLER =====
+// ===== HANDLER =====
 async function handleMessage(message) {
   const userId = message.from_id;
   const peerId = message.peer_id;
   const text = (message.text || "").trim();
   const now = Date.now();
 
-  if (!memory[userId]) {
-    memory[userId] = { name: null, goal: null, tariff: "base" };
-    saveMemory();
-  }
+  // --- limits ---
+  if (!limits[userId])
+    limits[userId] = { last: 0, count: 0, day: today() };
 
-  const user = memory[userId];
-
-  // ===== FLOOD =====
-  if (!limits[userId]) limits[userId] = { last: 0, count: 0, day: today() };
-
-  if (now - limits[userId].last < FLOOD_DELAY) {
-    await sendVK(peerId, "Я здесь 😊 Напиши чуть позже");
-    return;
-  }
+  if (now - limits[userId].last < FLOOD_DELAY) return;
   limits[userId].last = now;
 
   if (limits[userId].day !== today()) {
@@ -113,51 +64,108 @@ async function handleMessage(message) {
     limits[userId].day = today();
   }
 
-  // ===== MENU → VIP =====
-  if (MENU_REGEX.test(text) && user.tariff !== "vip") {
-    await sendVK(
-      peerId,
-      `Меню на неделю и месяц доступно в тарифе «Личный ассистент» 💚\n\n${TARIFF_LINKS.vip}`
-    );
-    return;
+  // --- memory ---
+  if (!memory[userId]) {
+    memory[userId] = {
+      name: null,
+      step: 0,
+      tariff: "base"
+    };
+    saveMemory();
   }
 
-  // ===== LIMIT =====
-  if (limits[userId].count >= DAILY_LIMITS[user.tariff]) {
-    const next = user.tariff === "base" ? "pro" : "vip";
-    await sendVK(
-      peerId,
-      `Ты достиг лимита 😊\nХочешь больше возможностей?\n${TARIFF_LINKS[next]}`
-    );
-    return;
+  const user = memory[userId];
+
+  // ===== HUMAN RESPONSES =====
+  if (ABOUT_REGEX.test(text)) {
+    return sendVK(peerId, "Я Анна 😊 Нутрициолог. Помогаю с ПП и похудением 💚");
   }
 
+  if (THANKS_REGEX.test(text)) {
+    return sendVK(peerId, "Всегда рада помочь 💚");
+  }
+
+  // ===== ONBOARDING =====
+  if (user.step === 0) {
+    user.step = 1;
+    saveMemory();
+    return sendVK(peerId, "Привет 😊 Я Анна. Как тебя зовут?");
+  }
+
+  if (user.step === 1) {
+    user.name = text;
+    user.step = 2;
+    saveMemory();
+    return sendVK(
+      peerId,
+      `${user.name}, приятно познакомиться 💚\nКакая у тебя цель?\n1️⃣ Похудеть\n2️⃣ ПП питание\n3️⃣ Поддерживать форму`
+    );
+  }
+
+  if (user.step === 2) {
+    user.step = 3;
+    saveMemory();
+    return sendVK(
+      peerId,
+      "Отлично 👍 Тогда пиши продукты или задавай вопросы — я рядом 🥗"
+    );
+  }
+
+  // ===== MENU (VIP ONLY) =====
+  if (MENU_REGEX.test(text)) {
+    if (user.tariff !== "vip") {
+      return sendVK(
+        peerId,
+        "Меню на неделю доступно в тарифе «Личный ассистент» 💚\nhttps://vk.com/pp_recepty_vk?w=donut_payment-234876171&levelId=3257"
+      );
+    }
+  }
+
+  // ===== FILTER =====
   if (!ALLOWED_REGEX.test(text)) {
-    await sendVK(peerId, "Я помогаю с ПП питанием и рецептами 🥗");
-    return;
+    return sendVK(peerId, "Я подсказываю только по ПП питанию 🥗");
   }
 
-  // ===== AI =====
-  limits[userId].count++;
+  if (limits[userId].count >= DAILY_AI_LIMIT) {
+    return sendVK(peerId, "На сегодня лимит ответов исчерпан 😊");
+  }
+
   startTyping(peerId);
 
-  const ai = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: "Ты Анна, нутрициолог. Говори тепло и по-человечески." },
-        { role: "user", content: text }
-      ]
-    })
-  });
+  // ===== AI =====
+  let answer = "Секунду, думаю 😊";
 
-  const data = await ai.json();
-  await sendVK(peerId, data.choices?.[0]?.message?.content || "Я рядом 😊");
+  try {
+    const systemPrompt = `
+Ты Анна — живой нутрициолог.
+Пиши коротко, тепло, по-человечески.
+Если спрашивают меню — объясняй спокойно.
+Никакого официоза.
+`;
+
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: text }
+        ]
+      })
+    });
+
+    const data = await r.json();
+    answer = data.choices?.[0]?.message?.content || answer;
+    limits[userId].count++;
+  } catch (e) {
+    console.error(e);
+  }
+
+  await sendVK(peerId, answer);
 }
 
 // ===== HELPERS =====
@@ -168,6 +176,7 @@ function today() {
 function startTyping(peer_id) {
   fetch("https://api.vk.com/method/messages.setActivity", {
     method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       peer_id,
       type: "typing",
@@ -180,6 +189,7 @@ function startTyping(peer_id) {
 async function sendVK(peer_id, text) {
   await fetch("https://api.vk.com/method/messages.send", {
     method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       peer_id,
       message: text,
@@ -192,5 +202,5 @@ async function sendVK(peer_id, text) {
 
 // ===== START =====
 app.listen(process.env.PORT || 3000, () =>
-  console.log("Bot with Donut auto-tariffs is running 🚀")
+  console.log("Bot started")
 );
