@@ -34,13 +34,6 @@ const DONUT_LINKS = {
   assistant: "https://vk.com/pp_recepty_vk?w=donut_payment-234876171&levelId=3257"
 };
 
-const TARIFF_NAMES = {
-  free: "Бесплатный",
-  base: "Базовый",
-  advanced: "Продвинутый",
-  assistant: "Личный ассистент"
-};
-
 /* ================= LIMITS ================= */
 const limits = {};
 const FLOOD_DELAY = 4000;
@@ -55,8 +48,6 @@ const TARIFF_LIMITS = {
 /* ================= REGEX ================= */
 const FOOD_REGEX =
   /(пп|питани|калор|кбжу|рецепт|белк|жир|углев|куриц|рыб|мяс|рис|греч|ужин|обед|завтрак)/i;
-
-const TARIFF_REGEX = /(мой тариф|подписк|мой уровень)/i;
 
 /* ================= CALLBACK ================= */
 app.post("/", (req, res) => {
@@ -96,10 +87,7 @@ async function handleMessage(message) {
   }
 
   if (!memory[userId]) {
-    memory[userId] = {
-      tariff: "free",
-      dialog: []
-    };
+    memory[userId] = { tariff: "free", dialog: [] };
   }
 
   const user = memory[userId];
@@ -108,43 +96,9 @@ async function handleMessage(message) {
   user.tariff = await detectTariff(userId);
   saveMemory();
 
-  /* ===== MY TARIFF ===== */
-  if (TARIFF_REGEX.test(text)) {
-    let reply = `💎 Твой тариф: *${TARIFF_NAMES[user.tariff]}*\n\n`;
-
-    if (user.tariff === "free") {
-      reply +=
-        "Доступ ограничен 😊\n\n" +
-        "👇 Доступные тарифы:\n" +
-        `Базовый — ${DONUT_LINKS.base}\n` +
-        `Продвинутый — ${DONUT_LINKS.advanced}\n` +
-        `Личный ассистент — ${DONUT_LINKS.assistant}`;
-    }
-
-    if (user.tariff === "base") {
-      reply +=
-        "✔ КБЖУ по тексту\n" +
-        "❌ Без анализа фото и памяти\n\n" +
-        "🔓 Улучшить:\n" +
-        `${DONUT_LINKS.advanced}`;
-    }
-
-    if (user.tariff === "advanced") {
-      reply +=
-        "✔ Анализ фото (ограниченно)\n" +
-        "✔ Память диалога\n\n" +
-        "🚀 Полный доступ:\n" +
-        `${DONUT_LINKS.assistant}`;
-    }
-
-    if (user.tariff === "assistant") {
-      reply +=
-        "🔥 Полный доступ без ограничений:\n" +
-        "— фото\n— память\n— персональные рекомендации\n\n" +
-        "Ты на максимальном уровне 💚";
-    }
-
-    return sendVK(peerId, reply);
+  /* ===== МОЙ ТАРИФ ===== */
+  if (text === "мой тариф") {
+    return sendVK(peerId, tariffInfo(user.tariff));
   }
 
   /* ===== PHOTO ===== */
@@ -153,7 +107,7 @@ async function handleMessage(message) {
       return sendVK(
         peerId,
         "📸 Анализ еды по фото доступен в тарифе «Личный ассистент» 💚\n" +
-          DONUT_LINKS.assistant
+        DONUT_LINKS.assistant
       );
     }
   }
@@ -161,7 +115,7 @@ async function handleMessage(message) {
   if (!FOOD_REGEX.test(text)) {
     return sendVK(
       peerId,
-      "Я по теме питания 😊\nМогу разобрать рацион или КБЖУ 💚"
+      "Я по теме питания 😊\nМогу разобрать рацион, КБЖУ или дать советы 💚"
     );
   }
 
@@ -169,14 +123,13 @@ async function handleMessage(message) {
     return sendVK(
       peerId,
       "😊 На сегодня лимит ответов исчерпан.\n\n" +
-        "💚 «Личный ассистент» без ограничений 👇\n" +
-        DONUT_LINKS.assistant
+      "Хочешь без ограничений?\n💚 «Личный ассистент» 👇\n" +
+      DONUT_LINKS.assistant
     );
   }
 
   startTyping(peerId);
 
-  /* ===== MEMORY ===== */
   if (TARIFF_LIMITS[user.tariff].memory) {
     user.dialog.push({ role: "user", content: text });
     user.dialog = user.dialog.slice(-10);
@@ -186,7 +139,7 @@ async function handleMessage(message) {
     {
       role: "system",
       content:
-        "Ты Анна — живой нутрициолог. Общайся по-человечески, логично продолжай диалог."
+        "Ты Анна — живой нутрициолог. Общайся тепло, по-человечески и логично."
     },
     ...(user.dialog || []),
     { role: "user", content: text }
@@ -278,6 +231,38 @@ async function isAdmin(userId) {
   } catch {
     return false;
   }
+}
+
+/* ================= TARIFF INFO ================= */
+function tariffInfo(tariff) {
+  if (tariff === "assistant") {
+    return "💚 Ваш тариф: «Личный ассистент»\n\nПолный доступ без ограничений ✨";
+  }
+
+  if (tariff === "advanced") {
+    return (
+      "💚 Ваш тариф: «Продвинутый»\n\n" +
+      "• 10 AI-ответов в день\n• Анализ 1 фото\n• Память диалога\n\n" +
+      "🚀 Полный доступ:\n" +
+      DONUT_LINKS.assistant
+    );
+  }
+
+  if (tariff === "base") {
+    return (
+      "💚 Ваш тариф: «Базовый»\n\n" +
+      "• 5 AI-ответов в день\n\n" +
+      "✨ Улучшить:\n" +
+      DONUT_LINKS.advanced
+    );
+  }
+
+  return (
+    "💚 Ваш тариф: Бесплатный\n\n" +
+    "• 3 AI-ответа в день\n\n" +
+    "🚀 Без ограничений:\n" +
+    DONUT_LINKS.assistant
+  );
 }
 
 /* ================= HELPERS ================= */
