@@ -27,24 +27,27 @@ const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const VK_GROUP_ID = process.env.VK_GROUP_ID;
 
+/* ================= DONUT LINKS ================= */
+const DONUT_LINKS = {
+  base: "https://vk.com/pp_recepty_vk?w=donut_payment-234876171&levelId=3255",
+  advanced: "https://vk.com/pp_recepty_vk?w=donut_payment-234876171&levelId=3256",
+  assistant: "https://vk.com/pp_recepty_vk?w=donut_payment-234876171&levelId=3257"
+};
+
 /* ================= LIMITS ================= */
 const limits = {};
 const FLOOD_DELAY = 4000;
 
 const TARIFF_LIMITS = {
-  free: { ai: 5, photo: 0, menu: 0 },
-  base: { ai: 10, photo: 0, menu: 1 },
-  advanced: { ai: 20, photo: 0, menu: 7 },
-  vip: { ai: 999, photo: 999, menu: 999 } // 🔥 админы и ассистент
+  free: { ai: 3, photo: 0, memory: false },
+  base: { ai: 5, photo: 0, memory: false },
+  advanced: { ai: 10, photo: 1, memory: true },
+  assistant: { ai: 9999, photo: 9999, memory: true }
 };
 
 /* ================= REGEX ================= */
-const MENU_REGEX = /(меню).*(день|недел|7|месяц|30)/i;
 const FOOD_REGEX =
-  /(пп|питани|похуд|калор|кбжу|рецепт|белк|жир|углев|завтрак|обед|ужин|меню|продукт|куриц|рыб|мяс|рис|греч)/i;
-
-const ABOUT_REGEX = /(ты кто|кто ты|как тебя зовут)/i;
-const THANKS_REGEX = /(спасибо|благодарю)/i;
+  /(пп|питани|калор|кбжу|рецепт|белк|жир|углев|куриц|рыб|мяс|рис|греч|ужин|обед|завтрак)/i;
 
 /* ================= CALLBACK ================= */
 app.post("/", (req, res) => {
@@ -63,28 +66,6 @@ app.post("/", (req, res) => {
     }
   }
 });
-
-/* ================= ADMIN CHECK ================= */
-async function isGroupAdmin(userId) {
-  try {
-    const r = await fetch("https://api.vk.com/method/groups.getMembers", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        group_id: VK_GROUP_ID,
-        filter: "managers",
-        access_token: VK_TOKEN,
-        v: "5.199"
-      })
-    });
-
-    const data = await r.json();
-    return data.response?.items?.some(u => u.id === userId);
-  } catch (e) {
-    console.error("Admin check error:", e);
-    return false;
-  }
-}
 
 /* ================= MAIN ================= */
 async function handleMessage(message) {
@@ -107,79 +88,63 @@ async function handleMessage(message) {
 
   if (!memory[userId]) {
     memory[userId] = {
-      name: null,
-      goal: null,
-      step: 0,
-      mode: "onboarding",
       tariff: "free",
-      adminChecked: false,
-      isAdmin: false
+      dialog: []
     };
-    saveMemory();
   }
 
   const user = memory[userId];
 
-  /* ===== ADMIN OVERRIDE (1 раз в день) ===== */
-  if (!user.adminChecked || user.adminChecked !== today()) {
-    user.isAdmin = await isGroupAdmin(userId);
-    user.adminChecked = today();
-    if (user.isAdmin) {
-      user.tariff = "vip";
-    }
-    saveMemory();
-  }
+  /* ===== AUTO TARIFF DETECT ===== */
+  user.tariff = await detectTariff(userId);
+  saveMemory();
 
-  /* ================= PHOTO ================= */
+  /* ===== PHOTO ===== */
   if (message.attachments?.some(a => a.type === "photo")) {
-    if (!checkAccess(user, "photo", userId)) {
+    if (!hasAccess(user, "photo", userId)) {
       return sendVK(
         peerId,
-        "Я вижу фото 😊\nАнализ еды по фото доступен в тарифе «Личный ассистент» 💚"
+        "📸 Анализ еды по фото доступен в тарифе «Личный ассистент» 💚\n" +
+        DONUT_LINKS.assistant
       );
     }
-    return sendVK(peerId, "Фото принято 📸 Сейчас разберу КБЖУ 💚");
   }
 
-  /* ================= SERVICE ================= */
-  if (ABOUT_REGEX.test(text)) {
-    return sendVK(peerId, "Я Анна 😊 Нутрициолог. Помогаю с ПП и похудением 💚");
-  }
-
-  if (THANKS_REGEX.test(text)) {
-    return sendVK(peerId, "Всегда рада помочь 💚");
-  }
-
-  /* ================= ONBOARDING ================= */
-  if (user.mode === "onboarding") {
-    user.mode = "dialog";
-    saveMemory();
-    return sendVK(peerId, "Привет 😊 Я Анна. Чем могу помочь по питанию?");
-  }
-
-  /* ================= MENU ================= */
-  if (MENU_REGEX.test(text) && !checkAccess(user, "menu", userId)) {
-    return sendVK(
-      peerId,
-      "Составление меню доступно по подписке 💚"
-    );
-  }
-
-  /* ================= FILTER ================= */
   if (!FOOD_REGEX.test(text)) {
     return sendVK(
       peerId,
-      "Я по теме питания 😊 Хочешь разобрать рацион или КБЖУ?"
+      "Я по теме питания 😊\nМогу разобрать рацион или КБЖУ 💚"
     );
   }
 
-  if (!checkAccess(user, "ai", userId)) {
-    return sendVK(peerId, "На сегодня лимит ответов исчерпан 😊");
+  if (!hasAccess(user, "ai", userId)) {
+    return sendVK(
+      peerId,
+      "😊 На сегодня лимит ответов исчерпан.\n\n" +
+      "Хочешь продолжить без ограничений?\n" +
+      "💚 «Личный ассистент» 👇\n" +
+      DONUT_LINKS.assistant
+    );
   }
 
   startTyping(peerId);
 
-  /* ================= AI ================= */
+  /* ===== MEMORY ===== */
+  if (TARIFF_LIMITS[user.tariff].memory) {
+    user.dialog.push({ role: "user", content: text });
+    user.dialog = user.dialog.slice(-10);
+  }
+
+  let messages = [
+    {
+      role: "system",
+      content:
+        "Ты Анна — живой нутрициолог. Общайся как человек, логично продолжай диалог."
+    },
+    ...(user.dialog || []),
+    { role: "user", content: text }
+  ];
+
   let answer = "Секунду, думаю 😊";
 
   try {
@@ -191,20 +156,20 @@ async function handleMessage(message) {
       },
       body: JSON.stringify({
         model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content:
-              "Ты Анна — живой нутрициолог. Общайся как человек, логично продолжай диалог, мягко возвращай к теме питания."
-          },
-          { role: "user", content: text }
-        ]
+        messages
       })
     });
 
     const data = await r.json();
     answer = data.choices?.[0]?.message?.content || answer;
+
     limits[userId].ai++;
+
+    if (TARIFF_LIMITS[user.tariff].memory) {
+      user.dialog.push({ role: "assistant", content: answer });
+    }
+
+    saveMemory();
   } catch (e) {
     console.error(e);
   }
@@ -213,13 +178,70 @@ async function handleMessage(message) {
 }
 
 /* ================= ACCESS ================= */
-function checkAccess(user, feature, userId) {
-  const plan = TARIFF_LIMITS[user.tariff || "free"];
-  if (!plan) return false;
+function hasAccess(user, feature, userId) {
+  if (user.tariff === "admin") return true;
+
+  const plan = TARIFF_LIMITS[user.tariff] || TARIFF_LIMITS.free;
+
   if (feature === "ai") return limits[userId].ai < plan.ai;
   if (feature === "photo") return plan.photo > 0;
-  if (feature === "menu") return plan.menu > 0;
+
   return false;
+}
+
+/* ================= TARIFF DETECT ================= */
+async function detectTariff(userId) {
+  // 🔥 АДМИНЫ — ВСЕГДА ASSISTANT
+  if (await isAdmin(userId)) return "assistant";
+
+  try {
+    const r = await fetch(
+      `https://api.vk.com/method/donut.getSubscription`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          owner_id: "-" + VK_GROUP_ID,
+          user_id: userId,
+          access_token: VK_TOKEN,
+          v: "5.199"
+        })
+      }
+    );
+
+    const data = await r.json();
+    const level = data.response?.subscription?.level_id;
+
+    if (level === 3257) return "assistant";
+    if (level === 3256) return "advanced";
+    if (level === 3255) return "base";
+  } catch {}
+
+  return "free";
+}
+
+/* ================= ADMIN CHECK ================= */
+async function isAdmin(userId) {
+  try {
+    const r = await fetch(
+      `https://api.vk.com/method/groups.getMembers`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          group_id: VK_GROUP_ID,
+          filter: "managers",
+          access_token: VK_TOKEN,
+          v: "5.199"
+        })
+      }
+    );
+
+    const data = await r.json();
+    return data.response?.items?.some(m => m.id === userId);
+  } catch {
+    return false;
+  }
 }
 
 /* ================= HELPERS ================= */
