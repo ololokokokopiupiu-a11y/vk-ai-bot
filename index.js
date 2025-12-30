@@ -33,7 +33,7 @@ const ABOUT_REGEX = /(ты кто|кто ты|как тебя зовут)/i;
 const THANKS_REGEX = /(спасибо|благодарю)/i;
 
 // ===== CALLBACK =====
-app.post("/", (req, res) => {
+app.post("/", async (req, res) => {
   const body = req.body;
 
   if (body.type === "confirmation") {
@@ -41,6 +41,12 @@ app.post("/", (req, res) => {
   }
 
   res.send("ok");
+
+  // ===== VK DONUT EVENTS =====
+  if (body.type?.startsWith("donut_")) {
+    handleDonutEvent(body);
+    return;
+  }
 
   if (body.type === "message_new") {
     const msg = body.object.message;
@@ -50,7 +56,37 @@ app.post("/", (req, res) => {
   }
 });
 
-// ===== HANDLER =====
+// ===== DONUT HANDLER =====
+function handleDonutEvent(body) {
+  const userId = body.object.user_id;
+  if (!memory[userId]) {
+    memory[userId] = {
+      name: null,
+      step: 0,
+      tariff: "vip"
+    };
+  }
+
+  if (body.type === "donut_subscription_create") {
+    memory[userId].tariff = "vip";
+    sendVK(userId, "💚 Спасибо за подписку!\nТеперь тебе доступен «Личный ассистент» 👑");
+  }
+
+  if (
+    body.type === "donut_subscription_expired" ||
+    body.type === "donut_subscription_cancelled"
+  ) {
+    memory[userId].tariff = "base";
+    sendVK(
+      userId,
+      "Подписка завершилась 😊\nТы всегда можешь снова подключить «Личный ассистент» 💚"
+    );
+  }
+
+  saveMemory();
+}
+
+// ===== MESSAGE HANDLER =====
 async function handleMessage(message) {
   const userId = message.from_id;
   const peerId = message.peer_id;
@@ -75,24 +111,23 @@ async function handleMessage(message) {
     memory[userId] = {
       name: null,
       step: 0,
-      tariff: "base" // base | vip
+      tariff: "base"
     };
     saveMemory();
   }
 
   const user = memory[userId];
-  const hasName = Boolean(user.name);
   const hasPhoto = message.attachments?.some(a => a.type === "photo");
 
-  // ===== 🔒 PHOTO CHECK (VIP ONLY) =====
+  // ===== PHOTO (VIP ONLY) =====
   if (hasPhoto && user.tariff !== "vip") {
     return sendVK(
       peerId,
-      "Я вижу фото 😊\nРасчёт КБЖУ и анализ еды по фото доступны в тарифе «Личный ассистент» 💚\nhttps://vk.com/pp_recepty_vk?w=donut_payment-234876171&levelId=3257"
+      "📸 Анализ еды по фото доступен в тарифе «Личный ассистент» 💚\nhttps://vk.com/pp_recepty_vk?w=donut_payment-234876171&levelId=3257"
     );
   }
 
-  // ===== HUMAN RESPONSES =====
+  // ===== HUMAN =====
   if (ABOUT_REGEX.test(text)) {
     return sendVK(peerId, "Я Анна 😊 Нутрициолог. Помогаю с ПП и похудением 💚");
   }
@@ -108,7 +143,7 @@ async function handleMessage(message) {
     return sendVK(peerId, "Привет 😊 Я Анна. Как тебя зовут?");
   }
 
-  if (!hasName && user.step === 1) {
+  if (user.step === 1) {
     user.name = text;
     user.step = 2;
     saveMemory();
@@ -118,23 +153,21 @@ async function handleMessage(message) {
     );
   }
 
-  if (hasName && user.step === 2) {
+  if (user.step === 2) {
     user.step = 3;
     saveMemory();
     return sendVK(
       peerId,
-      "Отлично 🔥 Тогда пиши продукты или задавай вопросы — я рядом 🥗"
+      "Отлично 🔥 Пиши продукты или задавай вопросы — я рядом 🥗"
     );
   }
 
-  // ===== MENU (VIP ONLY) =====
-  if (MENU_REGEX.test(text)) {
-    if (user.tariff !== "vip") {
-      return sendVK(
-        peerId,
-        "Меню на неделю доступно в тарифе «Личный ассистент» 💚\nhttps://vk.com/pp_recepty_vk?w=donut_payment-234876171&levelId=3257"
-      );
-    }
+  // ===== MENU =====
+  if (MENU_REGEX.test(text) && user.tariff !== "vip") {
+    return sendVK(
+      peerId,
+      "Меню на неделю доступно в тарифе «Личный ассистент» 💚\nhttps://vk.com/pp_recepty_vk?w=donut_payment-234876171&levelId=3257"
+    );
   }
 
   // ===== FILTER =====
@@ -154,9 +187,9 @@ async function handleMessage(message) {
   try {
     const systemPrompt = `
 Ты Анна — живой нутрициолог.
-Отвечай тепло, по-человечески, без официоза.
-Если пользователь VIP — помогай полностью.
-Если FREE — мягко объясняй ограничения.
+Отвечай тепло, по-человечески.
+VIP — без ограничений.
+FREE — мягко подталкивай к подписке.
 `;
 
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -218,5 +251,5 @@ async function sendVK(peer_id, text) {
 
 // ===== START =====
 app.listen(process.env.PORT || 3000, () =>
-  console.log("Bot started")
+  console.log("Bot started with VK Donut")
 );
