@@ -40,11 +40,10 @@ const TARIFF_LIMITS = {
 
 /* ================= REGEX ================= */
 const MENU_REGEX = /(меню).*(день|недел|7|месяц|30)/i;
-const ALLOWED_REGEX =
-  /(пп|питани|похуд|калор|кбжу|рецепт|белк|жир|углев|завтрак|обед|ужин|меню|продукт|что есть)/i;
+const FOOD_REGEX =
+  /(пп|питани|похуд|калор|кбжу|рецепт|белк|жир|углев|завтрак|обед|ужин|меню|продукт|куриц|рыб|мяс|рис|греч)/i;
 const ABOUT_REGEX = /(ты кто|кто ты|как тебя зовут)/i;
 const THANKS_REGEX = /(спасибо|благодарю)/i;
-const HELLO_REGEX = /^(привет|здравствуй|hi|hello)$/i;
 
 /* ================= CALLBACK ================= */
 app.post("/", (req, res) => {
@@ -68,7 +67,7 @@ app.post("/", (req, res) => {
 async function handleMessage(message) {
   const userId = message.from_id;
   const peerId = message.peer_id;
-  const text = (message.text || "").trim();
+  const text = (message.text || "").trim().toLowerCase();
   const now = Date.now();
 
   if (!limits[userId]) {
@@ -84,19 +83,19 @@ async function handleMessage(message) {
   }
 
   if (!memory[userId]) {
-    memory[userId] = { name: null, goal: null, step: 0, tariff: "free" };
+    memory[userId] = {
+      name: null,
+      goal: null,
+      step: 0,
+      mode: "onboarding", // 🔥 КЛЮЧЕВО
+      tariff: "free"
+    };
     saveMemory();
   }
 
   const user = memory[userId];
 
-  // ❗ Если человек сразу пишет по делу — считаем, что он уже знаком
-  if (user.step === 0 && text.length > 3 && !HELLO_REGEX.test(text)) {
-    user.step = 3;
-    saveMemory();
-  }
-
-  /* ===== PHOTO ===== */
+  /* ================= PHOTO ================= */
   if (message.attachments?.some(a => a.type === "photo")) {
     if (!checkAccess(user, "photo", userId)) {
       return sendVK(
@@ -106,10 +105,12 @@ async function handleMessage(message) {
           "&levelId=3257"
       );
     }
-    return sendVK(peerId, "Фото принято 📸 Скоро добавлю анализ 💚");
+    user.mode = "dialog";
+    saveMemory();
+    return sendVK(peerId, "Фото принято 📸 Хочешь разобрать КБЖУ?");
   }
 
-  /* ===== SERVICE ===== */
+  /* ================= SERVICE ================= */
   if (ABOUT_REGEX.test(text)) {
     return sendVK(peerId, "Я Анна 😊 Нутрициолог. Помогаю с ПП и похудением 💚");
   }
@@ -118,61 +119,34 @@ async function handleMessage(message) {
     return sendVK(peerId, "Всегда рада помочь 💚");
   }
 
-  /* ===== ONBOARDING ===== */
-  if (user.step === 0 && HELLO_REGEX.test(text)) {
-    user.step = 1;
+  /* ================= ONBOARDING (ОДИН РАЗ) ================= */
+  if (user.mode === "onboarding") {
+    user.mode = "dialog";
     saveMemory();
-    return sendVK(peerId, "Привет 😊 Я Анна. Как тебя зовут?");
+    return sendVK(peerId, "Привет 😊 Я Анна. Чем могу помочь по питанию?");
   }
 
-  if (user.step === 1) {
-    user.name = text;
-    user.step = 2;
-    saveMemory();
+  /* ================= DIALOG ================= */
+
+  // короткие ответы продолжают диалог
+  if (text === "да") {
+    return sendVK(peerId, "Отлично 😊 Тогда напиши продукты и примерные порции 🥗");
+  }
+
+  if (!FOOD_REGEX.test(text)) {
     return sendVK(
       peerId,
-      `${user.name}, приятно познакомиться 💚\nКакая у тебя цель?\n1️⃣ Похудеть\n2️⃣ ПП питание\n3️⃣ Поддерживать форму`
+      "Я по теме питания 😊 Если хочешь — разберём рацион или КБЖУ 💚"
     );
   }
 
-  if (user.step === 2) {
-    user.goal = text;
-    user.step = 3;
-    saveMemory();
-    return sendVK(peerId, "Отлично 👍 Пиши продукты или вопросы 🥗");
-  }
-
-  /* ===== MENU ===== */
-  if (MENU_REGEX.test(text) && !checkAccess(user, "menu", userId)) {
-    return sendVK(
-      peerId,
-      "Меню доступно по подписке 💚\nhttps://vk.com/pp_recepty_vk?w=donut_payment-" +
-        VK_GROUP_ID
-    );
-  }
-
-  /* ===== SOFT OFFTOP RETURN ===== */
-  if (user.step >= 3 && !ALLOWED_REGEX.test(text) && text.length > 3) {
-    const softReplies = [
-      "Я могу помочь с питанием и похудением 🥗",
-      "Давай вернёмся к ПП 😊 Что сегодня ел?",
-      "Хочешь разобрать рацион или КБЖУ?",
-      "Я по теме питания — с радостью помогу 💚"
-    ];
-    return sendVK(
-      peerId,
-      softReplies[Math.floor(Math.random() * softReplies.length)]
-    );
-  }
-
-  /* ===== AI LIMIT ===== */
   if (!checkAccess(user, "ai", userId)) {
     return sendVK(peerId, "На сегодня лимит ответов исчерпан 😊");
   }
 
   startTyping(peerId);
 
-  /* ===== AI ===== */
+  /* ================= AI ================= */
   let answer = "Секунду, думаю 😊";
 
   try {
@@ -188,20 +162,16 @@ async function handleMessage(message) {
           {
             role: "system",
             content:
-              "Ты Анна — тёплый нутрициолог. Коротко, по делу, по-человечески."
+              "Ты Анна — живой нутрициолог. Общайся как человек, без шаблонов. Продолжай диалог логично."
           },
           { role: "user", content: text }
         ]
       })
     });
 
-    if (r.ok) {
-      const data = await r.json();
-      answer = data.choices?.[0]?.message?.content || answer;
-      limits[userId].ai++;
-    } else {
-      answer = "Сейчас не могу ответить, попробуй чуть позже 💚";
-    }
+    const data = await r.json();
+    answer = data.choices?.[0]?.message?.content || answer;
+    limits[userId].ai++;
   } catch (e) {
     console.error(e);
   }
@@ -211,14 +181,11 @@ async function handleMessage(message) {
 
 /* ================= ACCESS ================= */
 function checkAccess(user, feature, userId) {
-  const tariff = user.tariff || "free";
-  const plan = TARIFF_LIMITS[tariff];
+  const plan = TARIFF_LIMITS[user.tariff || "free"];
   if (!plan) return false;
-
   if (feature === "ai") return limits[userId].ai < plan.ai;
   if (feature === "photo") return plan.photo > 0;
   if (feature === "menu") return plan.menu > 0;
-
   return false;
 }
 
