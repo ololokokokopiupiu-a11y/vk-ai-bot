@@ -5,212 +5,171 @@ import fs from "fs";
 const app = express();
 app.use(express.json());
 
-// ===== FILE STORAGE =====
-const MEMORY_FILE = "./memory.json";
+/* ================= FILE MEMORY ================= */
+const FILE = "./memory.json";
+let memory = fs.existsSync(FILE)
+  ? JSON.parse(fs.readFileSync(FILE, "utf8"))
+  : {};
 
-let memory = {};
-if (fs.existsSync(MEMORY_FILE)) {
-  try {
-    memory = JSON.parse(fs.readFileSync(MEMORY_FILE, "utf8"));
-  } catch {
-    memory = {};
-  }
-}
+const save = () =>
+  fs.writeFileSync(FILE, JSON.stringify(memory, null, 2));
 
-function saveMemory() {
-  fs.writeFileSync(MEMORY_FILE, JSON.stringify(memory, null, 2));
-}
-
-// ===== ENV =====
+/* ================= ENV ================= */
 const VK_TOKEN = process.env.VK_TOKEN;
 const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const GROUP_ID = process.env.VK_GROUP_ID; // ОБЯЗАТЕЛЬНО
 
-// ===== LIMITS =====
-const limits = {};
+/* ================= TARIFFS ================= */
+const TARIFFS = {
+  free: { ai: 3, photo: 0 },
+  base: { ai: 10, photo: 0 },
+  pro: { ai: 20, photo: 1 },
+  vip: { ai: 999, photo: 999 }
+};
 
-// ===== SETTINGS =====
-const FLOOD_DELAY = 4000;
-const DAILY_AI_LIMIT = 10;
+/* ================= REGEX ================= */
+const FOOD = /(пп|питани|похуд|калор|кбжу|рецепт|белк|жир|углев|продукт|есть дома)/i;
+const HEALTH = /(давление|диабет|болит|болезн|врач)/i;
+const THANKS = /(спасибо|благодарю)/i;
+const BYE = /(пока|до свидания)/i;
 
-const ALLOWED_REGEX =
-  /(пп|питани|похуд|калор|кбжу|рецепт|белк|жир|углев|завтрак|обед|ужин|продукт|есть дома)/i;
-
-const PROGRESS_REGEX =
-  /(похуд|минус|сброс|стал лучше|держусь|не срываюсь|ем пп|результат)/i;
-
-const ABOUT_BOT_REGEX =
-  /(ты кто|кто ты|тебя зовут|как тебя зовут|ты бот|ты анна)/i;
-
-const THANKS_REGEX =
-  /(спасибо|благодарю|thanks|сенкс)/i;
-
-const BYE_REGEX =
-  /(пока|до свидания|увидимся|спокойной ночи)/i;
-
-// ===== NAME VALIDATION =====
-const BAD_NAMES = ["привет", "йцукен", "asdf", "qwerty", "да", "нет", "ок"];
-
-function isValidName(text) {
-  if (!text) return false;
-  const name = text.trim().toLowerCase();
-  if (name.length < 2 || name.length > 20) return false;
-  if (!/^[a-zа-яё]+$/i.test(name)) return false;
-  if (BAD_NAMES.includes(name)) return false;
-  return true;
-}
-
-// ===== CALLBACK =====
+/* ================= CALLBACK ================= */
 app.post("/", (req, res) => {
   const body = req.body;
-
-  if (body.type === "confirmation") {
-    return res.send(VK_CONFIRMATION);
-  }
-
+  if (body.type === "confirmation") return res.send(VK_CONFIRMATION);
   res.send("ok");
 
   if (body.type === "message_new") {
-    const message = body.object.message;
-    if (message.from_id <= 0) return;
-    handleMessage(message).catch(console.error);
+    handleMessage(body.object.message).catch(console.error);
   }
 });
 
-// ===== MESSAGE HANDLER =====
-async function handleMessage(message) {
-  const userId = message.from_id;
-  const peerId = message.peer_id;
-  const text = (message.text || "").trim();
-  const now = Date.now();
+/* ================= DONUT CHECK ================= */
+async function isDon(userId) {
+  const res = await fetch(
+    "https://api.vk.com/method/donut.isDon",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        owner_id: `-${GROUP_ID}`,
+        user_id: userId,
+        access_token: VK_TOKEN,
+        v: "5.199"
+      })
+    }
+  ).then(r => r.json());
 
-  // --- limits ---
-  if (!limits[userId]) {
-    limits[userId] = { last: 0, count: 0, day: today() };
-  }
+  return res?.response === 1;
+}
 
-  if (now - limits[userId].last < FLOOD_DELAY) {
-    await sendVK(peerId, "Я здесь 😊 Напиши чуть позже");
-    return;
-  }
-  limits[userId].last = now;
+/* ================= MESSAGE HANDLER ================= */
+async function handleMessage(msg) {
+  const userId = msg.from_id;
+  const peer = msg.peer_id;
+  const text = (msg.text || "").trim();
+  const hasPhoto = msg.attachments?.some(a => a.type === "photo");
 
-  if (limits[userId].day !== today()) {
-    limits[userId].count = 0;
-    limits[userId].day = today();
-  }
-
-  // --- memory ---
   if (!memory[userId]) {
     memory[userId] = {
       name: null,
-      goal: null,
       step: 0,
-      tariff: "base", // base | vip
-      progressNotes: [],
-      lastProgressAsk: 0,
-      lastWeeklyReport: 0
+      tariff: "free",
+      ai: 0,
+      photo: 0,
+      day: today()
     };
-    saveMemory();
+    save();
   }
 
   const user = memory[userId];
 
-  // ===== ABOUT BOT =====
-  if (ABOUT_BOT_REGEX.test(text)) {
-    await sendVK(peerId, "Меня зовут Анна 😊 Я нутрициолог и помогаю с ПП питанием 🥗");
-    return;
+  /* reset day */
+  if (user.day !== today()) {
+    user.ai = 0;
+    user.photo = 0;
+    user.day = today();
   }
 
-  // ===== THANKS =====
-  if (THANKS_REGEX.test(text)) {
-    await sendVK(peerId, "Пожалуйста 😊 Я рядом, если понадобится помощь 🥗");
-    return;
-  }
+  /* auto donut */
+  const don = await isDon(userId);
+  if (!don) user.tariff = "free";
 
-  // ===== GOODBYE =====
-  if (BYE_REGEX.test(text)) {
-    await sendVK(peerId, "Хорошего дня 😊 Продолжай заботиться о себе ❤️");
-    return;
-  }
+  /* simple replies */
+  if (THANKS.test(text))
+    return send(peer, "Пожалуйста 😊 Я рада помочь 💚");
 
-  // ===== ONBOARDING =====
+  if (BYE.test(text))
+    return send(peer, "Береги себя 💚 Я всегда рядом");
+
+  /* onboarding */
   if (user.step === 0) {
-    await sendVK(peerId, "Привет! Я Анна — нутрициолог 😊 Как тебя зовут?");
     user.step = 1;
-    saveMemory();
-    return;
+    save();
+    return send(peer, "Привет 😊 Я Анна, нутрициолог. Как тебя зовут?");
   }
 
   if (user.step === 1) {
-    if (!isValidName(text)) {
-      await sendVK(peerId, "Подскажи, пожалуйста, именно имя 😊");
-      return;
-    }
+    if (!/^[а-яёa-z]{2,20}$/i.test(text))
+      return send(peer, "Подскажи, пожалуйста, именно имя 💚");
     user.name = text;
     user.step = 2;
-    saveMemory();
-    await sendVK(
-      peerId,
-      `${user.name}, приятно познакомиться 😊\nКакая у тебя цель?\n1️⃣ Похудеть\n2️⃣ ПП питание\n3️⃣ Поддерживать форму`
-    );
-    return;
+    save();
+    return send(peer, `${user.name}, приятно познакомиться 🌿`);
   }
 
-  if (user.step === 2) {
-    if (/1|похуд/i.test(text)) user.goal = "похудение";
-    else if (/2|пп/i.test(text)) user.goal = "ПП питание";
-    else user.goal = "поддержание формы";
+  /* limits */
+  const lim = TARIFFS[user.tariff];
 
-    user.step = 3;
-    saveMemory();
-    await sendVK(
-      peerId,
-      "Отлично 👍 Я запомнила.\nПиши продукты или задавай вопросы 🥗"
-    );
-    return;
-  }
+  if (user.ai >= lim.ai)
+    return send(peer, "Лимит исчерпан 🌿 В тарифах выше возможностей больше");
 
-  // ===== PROGRESS MESSAGE =====
-  if (PROGRESS_REGEX.test(text)) {
-    user.progressNotes.push({
-      text,
-      date: new Date().toISOString()
-    });
-    user.lastProgressAsk = Date.now();
-    saveMemory();
+  if (hasPhoto && user.photo >= lim.photo)
+    return send(peer, "Анализ фото доступен в PRO и VIP 📸");
 
-    await sendVK(
-      peerId,
-      `${user.name}, это очень круто 💚 Я правда рада твоему прогрессу!`
-    );
-    return;
-  }
+  /* photo vision */
+  let answer = "";
 
-  // ===== AFTER ONBOARDING =====
-  if (!ALLOWED_REGEX.test(text)) {
-    await sendVK(peerId, "Я помогаю только с ПП питанием 🥗");
-    return;
-  }
+  if (hasPhoto) {
+    const vision = await fetch(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "gpt-4o",
+          messages: [
+            {
+              role: "system",
+              content:
+                "Ты нутрициолог. Определи блюдо по фото и оцени КБЖУ."
+            },
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "Что на фото и КБЖУ?" },
+                { type: "image_url", image_url: { url: msg.attachments[0].photo.sizes.at(-1).url } }
+              ]
+            }
+          ]
+        })
+      }
+    ).then(r => r.json());
 
-  if (limits[userId].count >= DAILY_AI_LIMIT) {
-    await sendVK(peerId, "На сегодня лимит ответов исчерпан 😊");
-    return;
-  }
+    answer =
+      vision.choices?.[0]?.message?.content ||
+      "Не смогла распознать фото 😔";
 
-  startTyping(peerId);
+    user.photo++;
+  } else {
+    if (!FOOD.test(text))
+      return send(peer, "Я помогаю только с ПП питанием 🥗");
 
-  let answer = "Секунду, думаю 😊";
-
-  try {
-    const systemPrompt = `
-Ты — Анна, нутрициолог.
-Говори тепло и поддерживающе.
-Если пользователь уже добивался прогресса — мягко хвали.
-Помогай с ПП питанием, рецептами и КБЖУ.
-`;
-
-    const aiResponse = await fetch(
+    const ai = await fetch(
       "https://api.openai.com/v1/chat/completions",
       {
         method: "POST",
@@ -221,93 +180,47 @@ async function handleMessage(message) {
         body: JSON.stringify({
           model: "gpt-4o-mini",
           messages: [
-            { role: "system", content: systemPrompt },
+            {
+              role: "system",
+              content:
+                "Ты Анна, нутрициолог. Отвечай тепло и по-человечески."
+            },
             { role: "user", content: text }
           ]
         })
       }
-    );
+    ).then(r => r.json());
 
-    const aiData = await aiResponse.json();
-    answer = aiData.choices?.[0]?.message?.content || answer;
-    limits[userId].count++;
-
-  } catch (e) {
-    console.error("OpenAI error:", e);
+    answer = ai.choices?.[0]?.message?.content || "Секунду 😊";
   }
 
-  await sendVK(peerId, answer);
+  if (HEALTH.test(text))
+    answer +=
+      "\n\n⚠️ Я не врач. При проблемах со здоровьем обратись к специалисту.";
+
+  user.ai++;
+  save();
+
+  await send(peer, answer);
 }
 
-// ===== BACKGROUND CHECKS =====
-setInterval(async () => {
-  const now = Date.now();
+/* ================= HELPERS ================= */
+const today = () => new Date().toISOString().slice(0, 10);
 
-  for (const userId in memory) {
-    const user = memory[userId];
-
-    // 🔔 Progress reminder (every 3 days)
-    if (
-      user.step >= 3 &&
-      now - user.lastProgressAsk > 3 * 24 * 60 * 60 * 1000
-    ) {
-      await sendVK(
-        userId,
-        `${user.name || "Привет"} 😊 Как у тебя сейчас дела с питанием? Есть ли небольшие результаты?`
-      );
-      user.lastProgressAsk = now;
-    }
-
-    // 👑 Weekly report for VIP
-    if (
-      user.tariff === "vip" &&
-      now - user.lastWeeklyReport > 7 * 24 * 60 * 60 * 1000
-    ) {
-      await sendVK(
-        userId,
-        `${user.name}, подведём итоги недели 💚\nТы держишь фокус на цели «${user.goal}». Продолжай — результат обязательно будет 🙌`
-      );
-      user.lastWeeklyReport = now;
-    }
-  }
-
-  saveMemory();
-}, 60 * 60 * 1000); // проверка раз в час
-
-// ===== HELPERS =====
-function today() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function startTyping(peer_id) {
-  fetch("https://api.vk.com/method/messages.setActivity", {
+const send = (peer, text) =>
+  fetch("https://api.vk.com/method/messages.send", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      peer_id,
-      type: "typing",
-      access_token: VK_TOKEN,
-      v: "5.199"
-    })
-  }).catch(() => {});
-}
-
-async function sendVK(peer_id, text) {
-  await fetch("https://api.vk.com/method/messages.send", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      peer_id,
+      peer_id: peer,
       message: text,
-      random_id: Date.now().toString(),
+      random_id: Date.now(),
       access_token: VK_TOKEN,
       v: "5.199"
     })
   });
-}
 
-// ===== START =====
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("Server started on port", PORT);
-});
+/* ================= START ================= */
+app.listen(process.env.PORT || 3000, () =>
+  console.log("🔥 Анна запущена")
+);
