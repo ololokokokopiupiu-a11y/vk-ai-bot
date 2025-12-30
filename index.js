@@ -5,35 +5,50 @@ import fs from "fs";
 const app = express();
 app.use(express.json());
 
-// ===== STORAGE =====
+/* ================= STORAGE ================= */
 const MEMORY_FILE = "./memory.json";
-let memory = fs.existsSync(MEMORY_FILE)
-  ? JSON.parse(fs.readFileSync(MEMORY_FILE, "utf8"))
-  : {};
+let memory = {};
 
-const saveMemory = () =>
+if (fs.existsSync(MEMORY_FILE)) {
+  try {
+    memory = JSON.parse(fs.readFileSync(MEMORY_FILE, "utf8"));
+  } catch {
+    memory = {};
+  }
+}
+
+function saveMemory() {
   fs.writeFileSync(MEMORY_FILE, JSON.stringify(memory, null, 2));
+}
 
-// ===== ENV =====
+/* ================= ENV ================= */
 const VK_TOKEN = process.env.VK_TOKEN;
 const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const VK_GROUP_ID = process.env.VK_GROUP_ID; // для Donut
 
-// ===== LIMITS =====
+/* ================= LIMITS ================= */
 const limits = {};
-const DAILY_AI_LIMIT = 10;
 const FLOOD_DELAY = 4000;
 
-// ===== REGEX =====
-const MENU_REGEX = /(меню).*(недел|7)/i;
+/* лимиты по тарифам */
+const TARIFF_LIMITS = {
+  free: { ai: 5, photo: 0, menu: 0 },
+  base: { ai: 10, photo: 0, menu: 1 },
+  advanced: { ai: 20, photo: 0, menu: 7 },
+  vip: { ai: 100, photo: 100, menu: 30 }
+};
+
+/* ================= REGEX ================= */
+const MENU_REGEX = /(меню).*(день|недел|7|месяц|30)/i;
 const ALLOWED_REGEX =
-  /(пп|питани|похуд|калор|кбжу|рецепт|белк|жир|углев|завтрак|обед|ужин|меню|продукт|фото)/i;
+  /(пп|питани|похуд|калор|кбжу|рецепт|белк|жир|углев|завтрак|обед|ужин|меню|продукт|что есть)/i;
 
 const ABOUT_REGEX = /(ты кто|кто ты|как тебя зовут)/i;
 const THANKS_REGEX = /(спасибо|благодарю)/i;
 
-// ===== CALLBACK =====
-app.post("/", async (req, res) => {
+/* ================= CALLBACK ================= */
+app.post("/", (req, res) => {
   const body = req.body;
 
   if (body.type === "confirmation") {
@@ -41,12 +56,6 @@ app.post("/", async (req, res) => {
   }
 
   res.send("ok");
-
-  // ===== VK DONUT EVENTS =====
-  if (body.type?.startsWith("donut_")) {
-    handleDonutEvent(body);
-    return;
-  }
 
   if (body.type === "message_new") {
     const msg = body.object.message;
@@ -56,78 +65,52 @@ app.post("/", async (req, res) => {
   }
 });
 
-// ===== DONUT HANDLER =====
-function handleDonutEvent(body) {
-  const userId = body.object.user_id;
-  if (!memory[userId]) {
-    memory[userId] = {
-      name: null,
-      step: 0,
-      tariff: "vip"
-    };
-  }
-
-  if (body.type === "donut_subscription_create") {
-    memory[userId].tariff = "vip";
-    sendVK(userId, "💚 Спасибо за подписку!\nТеперь тебе доступен «Личный ассистент» 👑");
-  }
-
-  if (
-    body.type === "donut_subscription_expired" ||
-    body.type === "donut_subscription_cancelled"
-  ) {
-    memory[userId].tariff = "base";
-    sendVK(
-      userId,
-      "Подписка завершилась 😊\nТы всегда можешь снова подключить «Личный ассистент» 💚"
-    );
-  }
-
-  saveMemory();
-}
-
-// ===== MESSAGE HANDLER =====
+/* ================= MAIN HANDLER ================= */
 async function handleMessage(message) {
   const userId = message.from_id;
   const peerId = message.peer_id;
   const text = (message.text || "").trim();
   const now = Date.now();
 
-  // ===== LIMITS =====
+  /* ---- limits ---- */
   if (!limits[userId]) {
-    limits[userId] = { last: 0, count: 0, day: today() };
+    limits[userId] = { last: 0, ai: 0, day: today() };
   }
 
   if (now - limits[userId].last < FLOOD_DELAY) return;
   limits[userId].last = now;
 
   if (limits[userId].day !== today()) {
-    limits[userId].count = 0;
+    limits[userId].ai = 0;
     limits[userId].day = today();
   }
 
-  // ===== MEMORY =====
+  /* ---- memory ---- */
   if (!memory[userId]) {
     memory[userId] = {
       name: null,
+      goal: null,
       step: 0,
-      tariff: "base"
+      tariff: "free" // free | base | advanced | vip
     };
     saveMemory();
   }
 
   const user = memory[userId];
-  const hasPhoto = message.attachments?.some(a => a.type === "photo");
 
-  // ===== PHOTO (VIP ONLY) =====
-  if (hasPhoto && user.tariff !== "vip") {
-    return sendVK(
-      peerId,
-      "📸 Анализ еды по фото доступен в тарифе «Личный ассистент» 💚\nhttps://vk.com/pp_recepty_vk?w=donut_payment-234876171&levelId=3257"
-    );
+  /* ================= PHOTO CHECK ================= */
+  if (message.attachments?.some(a => a.type === "photo")) {
+    if (!checkAccess(user, "photo")) {
+      return sendVK(
+        peerId,
+        "Я вижу фото 😊\nАнализ еды и КБЖУ по фото доступны в тарифе «Личный ассистент» 💚\nhttps://vk.com/pp_recepty_vk?w=donut_payment-" +
+          VK_GROUP_ID +
+          "&levelId=3257"
+      );
+    }
   }
 
-  // ===== HUMAN =====
+  /* ================= HUMAN ANSWERS ================= */
   if (ABOUT_REGEX.test(text)) {
     return sendVK(peerId, "Я Анна 😊 Нутрициолог. Помогаю с ПП и похудением 💚");
   }
@@ -136,7 +119,7 @@ async function handleMessage(message) {
     return sendVK(peerId, "Всегда рада помочь 💚");
   }
 
-  // ===== ONBOARDING =====
+  /* ================= ONBOARDING ================= */
   if (user.step === 0) {
     user.step = 1;
     saveMemory();
@@ -154,48 +137,52 @@ async function handleMessage(message) {
   }
 
   if (user.step === 2) {
+    user.goal = text;
     user.step = 3;
     saveMemory();
     return sendVK(
       peerId,
-      "Отлично 🔥 Пиши продукты или задавай вопросы — я рядом 🥗"
+      "Отлично 👍 Тогда пиши продукты или задавай вопросы — я рядом 🥗"
     );
   }
 
-  // ===== MENU =====
-  if (MENU_REGEX.test(text) && user.tariff !== "vip") {
-    return sendVK(
-      peerId,
-      "Меню на неделю доступно в тарифе «Личный ассистент» 💚\nhttps://vk.com/pp_recepty_vk?w=donut_payment-234876171&levelId=3257"
-    );
+  /* ================= MENU ================= */
+  if (MENU_REGEX.test(text)) {
+    if (!checkAccess(user, "menu")) {
+      return sendVK(
+        peerId,
+        "Меню доступно по подписке 💚\nhttps://vk.com/pp_recepty_vk?w=donut_payment-" +
+          VK_GROUP_ID
+      );
+    }
   }
 
-  // ===== FILTER =====
+  /* ================= FILTER ================= */
   if (!ALLOWED_REGEX.test(text)) {
     return sendVK(peerId, "Я подсказываю только по ПП питанию 🥗");
   }
 
-  if (limits[userId].count >= DAILY_AI_LIMIT) {
+  if (!checkAccess(user, "ai")) {
     return sendVK(peerId, "На сегодня лимит ответов исчерпан 😊");
   }
 
   startTyping(peerId);
 
-  // ===== AI =====
+  /* ================= AI ================= */
   let answer = "Секунду, думаю 😊";
 
   try {
     const systemPrompt = `
 Ты Анна — живой нутрициолог.
-Отвечай тепло, по-человечески.
-VIP — без ограничений.
-FREE — мягко подталкивай к подписке.
+Говори тепло, коротко, по-человечески.
+Если тариф ограничен — мягко объясняй.
+Никакого официоза и списков ради списков.
 `;
 
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
-        Authorization: \`Bearer \${OPENAI_API_KEY}\`,
+        Authorization: \`Bearer ${OPENAI_API_KEY}\`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
@@ -209,15 +196,29 @@ FREE — мягко подталкивай к подписке.
 
     const data = await r.json();
     answer = data.choices?.[0]?.message?.content || answer;
-    limits[userId].count++;
+    limits[userId].ai++;
   } catch (e) {
-    console.error(e);
+    console.error("OpenAI error:", e);
   }
 
-  return sendVK(peerId, answer);
+  await sendVK(peerId, answer);
 }
 
-// ===== HELPERS =====
+/* ================= ACCESS CONTROL ================= */
+function checkAccess(user, feature) {
+  const tariff = user.tariff || "free";
+  const limits = TARIFF_LIMITS[tariff];
+
+  if (!limits) return false;
+
+  if (feature === "ai") return limits.ai > 0;
+  if (feature === "photo") return limits.photo > 0;
+  if (feature === "menu") return limits.menu > 0;
+
+  return false;
+}
+
+/* ================= HELPERS ================= */
 function today() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -242,14 +243,15 @@ async function sendVK(peer_id, text) {
     body: new URLSearchParams({
       peer_id,
       message: text,
-      random_id: Date.now(),
+      random_id: Date.now().toString(),
       access_token: VK_TOKEN,
       v: "5.199"
     })
   });
 }
 
-// ===== START =====
-app.listen(process.env.PORT || 3000, () =>
-  console.log("Bot started with VK Donut")
-);
+/* ================= START ================= */
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log("Bot started on port", PORT);
+});
