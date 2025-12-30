@@ -49,6 +49,15 @@ const ALLOWED_REGEX =
 const ABOUT_REGEX = /(ты кто|кто ты|как тебя зовут)/i;
 const THANKS_REGEX = /(спасибо|благодарю)/i;
 
+/* ===== SOFT REPLIES (мягкий возврат к теме) ===== */
+const SOFT_REPLIES = [
+  "Я могу помочь с питанием и похудением 🥗",
+  "Давай лучше про ПП 😊 Что сегодня ел(а)?",
+  "Я здесь про здоровье и питание 💚",
+  "Хочешь — разберём рацион или продукты",
+  "Про еду с радостью помогу 🍽️"
+];
+
 /* ================= CALLBACK ================= */
 app.post("/", (req, res) => {
   const body = req.body;
@@ -148,11 +157,14 @@ async function handleMessage(message) {
     );
   }
 
-  /* ===== FILTER ===== */
-  if (!ALLOWED_REGEX.test(text)) {
-    return sendVK(peerId, "Я подсказываю только по ПП питанию 🥗");
+  /* ===== SOFT TOPIC GUARD ===== */
+  if (user.step >= 3 && !ALLOWED_REGEX.test(text)) {
+    const reply =
+      SOFT_REPLIES[Math.floor(Math.random() * SOFT_REPLIES.length)];
+    return sendVK(peerId, reply);
   }
 
+  /* ===== AI LIMITS ===== */
   if (!checkAccess(user, "ai", userId)) {
     return sendVK(peerId, "На сегодня лимит ответов исчерпан 😊");
   }
