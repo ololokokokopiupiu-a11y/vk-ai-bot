@@ -39,9 +39,8 @@ const TARIFF_LIMITS = {
 };
 
 /* ================= REGEX ================= */
-const MENU_REGEX = /(меню).*(день|недел|7|месяц|30)/i;
 const FOOD_REGEX =
-  /(пп|питани|похуд|калор|кбжу|рецепт|белк|жир|углев|завтрак|обед|ужин|меню|продукт|куриц|рыб|мяс|рис|греч)/i;
+  /(пп|питани|похуд|калор|кбжу|рецепт|белк|жир|углев|завтрак|обед|ужин|меню|продукт|куриц|рыб|мяс|рис|греч|ел|ем|съел)/i;
 const ABOUT_REGEX = /(ты кто|кто ты|как тебя зовут)/i;
 const THANKS_REGEX = /(спасибо|благодарю)/i;
 
@@ -67,7 +66,8 @@ app.post("/", (req, res) => {
 async function handleMessage(message) {
   const userId = message.from_id;
   const peerId = message.peer_id;
-  const text = (message.text || "").trim().toLowerCase();
+  const text = (message.text || "").trim();
+  const textLower = text.toLowerCase();
   const now = Date.now();
 
   if (!limits[userId]) {
@@ -84,11 +84,9 @@ async function handleMessage(message) {
 
   if (!memory[userId]) {
     memory[userId] = {
-      name: null,
-      goal: null,
-      step: 0,
-      mode: "onboarding", // 🔥 КЛЮЧЕВО
-      tariff: "free"
+      mode: "onboarding",
+      tariff: "free",
+      history: [] // 🧠 ПАМЯТЬ ДИАЛОГА
     };
     saveMemory();
   }
@@ -101,8 +99,7 @@ async function handleMessage(message) {
       return sendVK(
         peerId,
         "Я вижу фото 😊\nАнализ еды доступен в тарифе «Личный ассистент» 💚\nhttps://vk.com/pp_recepty_vk?w=donut_payment-" +
-          VK_GROUP_ID +
-          "&levelId=3257"
+          VK_GROUP_ID
       );
     }
     user.mode = "dialog";
@@ -111,34 +108,22 @@ async function handleMessage(message) {
   }
 
   /* ================= SERVICE ================= */
-  if (ABOUT_REGEX.test(text)) {
+  if (ABOUT_REGEX.test(textLower)) {
     return sendVK(peerId, "Я Анна 😊 Нутрициолог. Помогаю с ПП и похудением 💚");
   }
 
-  if (THANKS_REGEX.test(text)) {
+  if (THANKS_REGEX.test(textLower)) {
     return sendVK(peerId, "Всегда рада помочь 💚");
   }
 
-  /* ================= ONBOARDING (ОДИН РАЗ) ================= */
+  /* ================= ONBOARDING ================= */
   if (user.mode === "onboarding") {
     user.mode = "dialog";
     saveMemory();
     return sendVK(peerId, "Привет 😊 Я Анна. Чем могу помочь по питанию?");
   }
 
-  /* ================= DIALOG ================= */
-
-  // короткие ответы продолжают диалог
-  if (text === "да") {
-    return sendVK(peerId, "Отлично 😊 Тогда напиши продукты и примерные порции 🥗");
-  }
-
-  if (!FOOD_REGEX.test(text)) {
-    return sendVK(
-      peerId,
-      "Я по теме питания 😊 Если хочешь — разберём рацион или КБЖУ 💚"
-    );
-  }
+  /* ================= AI LOGIC ================= */
 
   if (!checkAccess(user, "ai", userId)) {
     return sendVK(peerId, "На сегодня лимит ответов исчерпан 😊");
@@ -146,7 +131,16 @@ async function handleMessage(message) {
 
   startTyping(peerId);
 
-  /* ================= AI ================= */
+  // 🧠 сохраняем историю (последние 6 сообщений)
+  user.history.push({ role: "user", content: text });
+  user.history = user.history.slice(-6);
+  saveMemory();
+
+  let softRedirect = false;
+  if (!FOOD_REGEX.test(textLower)) {
+    softRedirect = true;
+  }
+
   let answer = "Секунду, думаю 😊";
 
   try {
@@ -161,10 +155,25 @@ async function handleMessage(message) {
         messages: [
           {
             role: "system",
-            content:
-              "Ты Анна — живой нутрициолог. Общайся как человек, без шаблонов. Продолжай диалог логично."
+            content: `
+Ты Анна — живой нутрициолог.
+Общайся естественно, как человек.
+Помни контекст диалога.
+Если пользователь уходит в оффтоп — мягко верни разговор к питанию,
+но всегда отвечай на его сообщение.
+Не повторяй одни и те же фразы.
+`
           },
-          { role: "user", content: text }
+          ...user.history,
+          ...(softRedirect
+            ? [
+                {
+                  role: "system",
+                  content:
+                    "Пользователь ушёл в оффтоп. Мягко верни разговор к теме питания."
+                }
+              ]
+            : [])
         ]
       })
     });
@@ -172,6 +181,10 @@ async function handleMessage(message) {
     const data = await r.json();
     answer = data.choices?.[0]?.message?.content || answer;
     limits[userId].ai++;
+
+    user.history.push({ role: "assistant", content: answer });
+    user.history = user.history.slice(-6);
+    saveMemory();
   } catch (e) {
     console.error(e);
   }
