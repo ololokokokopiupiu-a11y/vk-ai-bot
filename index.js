@@ -69,12 +69,22 @@ async function handleMessage(message) {
     memory[userId] = {
       name: null,
       step: 0,
-      tariff: "base"
+      tariff: "base" // base | vip
     };
     saveMemory();
   }
 
   const user = memory[userId];
+
+  // ===== 🔒 PHOTO CHECK (VIP ONLY) =====
+  if (message.attachments?.some(a => a.type === "photo")) {
+    if (user.tariff !== "vip") {
+      return sendVK(
+        peerId,
+        "Я вижу фото 😊\nРасчёт КБЖУ и анализ еды по фото доступны в тарифе «Личный ассистент» 💚\nhttps://vk.com/pp_recepty_vk?w=donut_payment-234876171&levelId=3257"
+      );
+    }
+  }
 
   // ===== HUMAN RESPONSES =====
   if (ABOUT_REGEX.test(text)) {
@@ -138,9 +148,9 @@ async function handleMessage(message) {
   try {
     const systemPrompt = `
 Ты Анна — живой нутрициолог.
-Пиши коротко, тепло, по-человечески.
-Если спрашивают меню — объясняй спокойно.
-Никакого официоза.
+Отвечай тепло, по-человечески, без официоза.
+Если пользователь VIP — помогай полностью.
+Если FREE — мягко объясняй ограничения.
 `;
 
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
