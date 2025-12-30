@@ -27,10 +27,6 @@ const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const VK_GROUP_ID = process.env.VK_GROUP_ID;
 
-if (!OPENAI_API_KEY) {
-  console.error("❌ OPENAI_API_KEY not set");
-}
-
 /* ================= LIMITS ================= */
 const limits = {};
 const FLOOD_DELAY = 4000;
@@ -48,15 +44,7 @@ const ALLOWED_REGEX =
   /(пп|питани|похуд|калор|кбжу|рецепт|белк|жир|углев|завтрак|обед|ужин|меню|продукт|что есть)/i;
 const ABOUT_REGEX = /(ты кто|кто ты|как тебя зовут)/i;
 const THANKS_REGEX = /(спасибо|благодарю)/i;
-
-/* ===== SOFT REPLIES (мягкий возврат к теме) ===== */
-const SOFT_REPLIES = [
-  "Я могу помочь с питанием и похудением 🥗",
-  "Давай лучше про ПП 😊 Что сегодня ел(а)?",
-  "Я здесь про здоровье и питание 💚",
-  "Хочешь — разберём рацион или продукты",
-  "Про еду с радостью помогу 🍽️"
-];
+const HELLO_REGEX = /^(привет|здравствуй|hi|hello)$/i;
 
 /* ================= CALLBACK ================= */
 app.post("/", (req, res) => {
@@ -102,6 +90,12 @@ async function handleMessage(message) {
 
   const user = memory[userId];
 
+  // ❗ Если человек сразу пишет по делу — считаем, что он уже знаком
+  if (user.step === 0 && text.length > 3 && !HELLO_REGEX.test(text)) {
+    user.step = 3;
+    saveMemory();
+  }
+
   /* ===== PHOTO ===== */
   if (message.attachments?.some(a => a.type === "photo")) {
     if (!checkAccess(user, "photo", userId)) {
@@ -115,7 +109,7 @@ async function handleMessage(message) {
     return sendVK(peerId, "Фото принято 📸 Скоро добавлю анализ 💚");
   }
 
-  /* ===== HUMAN ===== */
+  /* ===== SERVICE ===== */
   if (ABOUT_REGEX.test(text)) {
     return sendVK(peerId, "Я Анна 😊 Нутрициолог. Помогаю с ПП и похудением 💚");
   }
@@ -125,7 +119,7 @@ async function handleMessage(message) {
   }
 
   /* ===== ONBOARDING ===== */
-  if (user.step === 0) {
+  if (user.step === 0 && HELLO_REGEX.test(text)) {
     user.step = 1;
     saveMemory();
     return sendVK(peerId, "Привет 😊 Я Анна. Как тебя зовут?");
@@ -157,14 +151,21 @@ async function handleMessage(message) {
     );
   }
 
-  /* ===== SOFT TOPIC GUARD ===== */
-  if (user.step >= 3 && !ALLOWED_REGEX.test(text)) {
-    const reply =
-      SOFT_REPLIES[Math.floor(Math.random() * SOFT_REPLIES.length)];
-    return sendVK(peerId, reply);
+  /* ===== SOFT OFFTOP RETURN ===== */
+  if (user.step >= 3 && !ALLOWED_REGEX.test(text) && text.length > 3) {
+    const softReplies = [
+      "Я могу помочь с питанием и похудением 🥗",
+      "Давай вернёмся к ПП 😊 Что сегодня ел?",
+      "Хочешь разобрать рацион или КБЖУ?",
+      "Я по теме питания — с радостью помогу 💚"
+    ];
+    return sendVK(
+      peerId,
+      softReplies[Math.floor(Math.random() * softReplies.length)]
+    );
   }
 
-  /* ===== AI LIMITS ===== */
+  /* ===== AI LIMIT ===== */
   if (!checkAccess(user, "ai", userId)) {
     return sendVK(peerId, "На сегодня лимит ответов исчерпан 😊");
   }
@@ -194,16 +195,15 @@ async function handleMessage(message) {
       })
     });
 
-    if (!r.ok) {
-      console.error("OpenAI HTTP error:", r.status);
-      answer = "Сейчас не могу ответить, попробуй чуть позже 💚";
-    } else {
+    if (r.ok) {
       const data = await r.json();
       answer = data.choices?.[0]?.message?.content || answer;
       limits[userId].ai++;
+    } else {
+      answer = "Сейчас не могу ответить, попробуй чуть позже 💚";
     }
   } catch (e) {
-    console.error("OpenAI error:", e);
+    console.error(e);
   }
 
   await sendVK(peerId, answer);
