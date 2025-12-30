@@ -1,21 +1,32 @@
 import express from "express";
 import fetch from "node-fetch";
+import fs from "fs";
 
 const app = express();
 app.use(express.json());
+
+// ===== FILE STORAGE =====
+const MEMORY_FILE = "./memory.json";
+
+let memory = {};
+if (fs.existsSync(MEMORY_FILE)) {
+  try {
+    memory = JSON.parse(fs.readFileSync(MEMORY_FILE, "utf8"));
+  } catch {
+    memory = {};
+  }
+}
+
+function saveMemory() {
+  fs.writeFileSync(MEMORY_FILE, JSON.stringify(memory, null, 2));
+}
 
 // ===== ENV =====
 const VK_TOKEN = process.env.VK_TOKEN;
 const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// ===== LOG =====
-console.log("VK_TOKEN:", VK_TOKEN ? "OK" : "MISSING");
-console.log("VK_CONFIRMATION:", VK_CONFIRMATION ? "OK" : "MISSING");
-console.log("OPENAI_API_KEY:", OPENAI_API_KEY ? "OK" : "MISSING");
-
-// ===== MEMORY & LIMITS =====
-const memory = {};
+// ===== LIMITS =====
 const limits = {};
 
 // ===== SETTINGS =====
@@ -25,6 +36,9 @@ const DAILY_AI_LIMIT = 10;
 const ALLOWED_REGEX =
   /(пп|питани|похуд|калор|кбжу|рецепт|белк|жир|углев|завтрак|обед|ужин|продукт|есть дома)/i;
 
+const PROGRESS_REGEX =
+  /(похуд|минус|сброс|стал лучше|держусь|не срываюсь|ем пп|результат)/i;
+
 const ABOUT_BOT_REGEX =
   /(ты кто|кто ты|тебя зовут|как тебя зовут|ты бот|ты анна)/i;
 
@@ -33,6 +47,18 @@ const THANKS_REGEX =
 
 const BYE_REGEX =
   /(пока|до свидания|увидимся|спокойной ночи)/i;
+
+// ===== NAME VALIDATION =====
+const BAD_NAMES = ["привет", "йцукен", "asdf", "qwerty", "да", "нет", "ок"];
+
+function isValidName(text) {
+  if (!text) return false;
+  const name = text.trim().toLowerCase();
+  if (name.length < 2 || name.length > 20) return false;
+  if (!/^[a-zа-яё]+$/i.test(name)) return false;
+  if (BAD_NAMES.includes(name)) return false;
+  return true;
+}
 
 // ===== CALLBACK =====
 app.post("/", (req, res) => {
@@ -79,37 +105,32 @@ async function handleMessage(message) {
     memory[userId] = {
       name: null,
       goal: null,
-      history: [],
-      step: 0
+      step: 0,
+      tariff: "base", // base | vip
+      progressNotes: [],
+      lastProgressAsk: 0,
+      lastWeeklyReport: 0
     };
+    saveMemory();
   }
 
   const user = memory[userId];
 
   // ===== ABOUT BOT =====
   if (ABOUT_BOT_REGEX.test(text)) {
-    await sendVK(
-      peerId,
-      "Меня зовут Анна 😊\nЯ виртуальный нутрициолог и помогаю с ПП питанием, рецептами и полезными привычками.\n\nХочешь — подберу рецепт из твоих продуктов 🥗"
-    );
+    await sendVK(peerId, "Меня зовут Анна 😊 Я нутрициолог и помогаю с ПП питанием 🥗");
     return;
   }
 
   // ===== THANKS =====
   if (THANKS_REGEX.test(text)) {
-    await sendVK(
-      peerId,
-      "Пожалуйста 😊 Рада быть полезной. Если понадобится помощь с питанием — я рядом 🥗"
-    );
+    await sendVK(peerId, "Пожалуйста 😊 Я рядом, если понадобится помощь 🥗");
     return;
   }
 
   // ===== GOODBYE =====
   if (BYE_REGEX.test(text)) {
-    await sendVK(
-      peerId,
-      "Хорошего дня 😊 Береги себя и питайся с заботой ❤️"
-    );
+    await sendVK(peerId, "Хорошего дня 😊 Продолжай заботиться о себе ❤️");
     return;
   }
 
@@ -117,16 +138,22 @@ async function handleMessage(message) {
   if (user.step === 0) {
     await sendVK(peerId, "Привет! Я Анна — нутрициолог 😊 Как тебя зовут?");
     user.step = 1;
+    saveMemory();
     return;
   }
 
   if (user.step === 1) {
+    if (!isValidName(text)) {
+      await sendVK(peerId, "Подскажи, пожалуйста, именно имя 😊");
+      return;
+    }
     user.name = text;
+    user.step = 2;
+    saveMemory();
     await sendVK(
       peerId,
       `${user.name}, приятно познакомиться 😊\nКакая у тебя цель?\n1️⃣ Похудеть\n2️⃣ ПП питание\n3️⃣ Поддерживать форму`
     );
-    user.step = 2;
     return;
   }
 
@@ -135,45 +162,52 @@ async function handleMessage(message) {
     else if (/2|пп/i.test(text)) user.goal = "ПП питание";
     else user.goal = "поддержание формы";
 
+    user.step = 3;
+    saveMemory();
     await sendVK(
       peerId,
-      "Отлично 👍 Я запомнила.\nНапиши, какие продукты есть дома, или задай вопрос по ПП 🥗"
+      "Отлично 👍 Я запомнила.\nПиши продукты или задавай вопросы 🥗"
     );
-    user.step = 3;
+    return;
+  }
+
+  // ===== PROGRESS MESSAGE =====
+  if (PROGRESS_REGEX.test(text)) {
+    user.progressNotes.push({
+      text,
+      date: new Date().toISOString()
+    });
+    user.lastProgressAsk = Date.now();
+    saveMemory();
+
+    await sendVK(
+      peerId,
+      `${user.name}, это очень круто 💚 Я правда рада твоему прогрессу!`
+    );
     return;
   }
 
   // ===== AFTER ONBOARDING =====
   if (!ALLOWED_REGEX.test(text)) {
-    await sendVK(
-      peerId,
-      "Я помогаю только с ПП питанием и похудением 🥗"
-    );
+    await sendVK(peerId, "Я помогаю только с ПП питанием 🥗");
     return;
   }
 
   if (limits[userId].count >= DAILY_AI_LIMIT) {
-    await sendVK(
-      peerId,
-      "На сегодня лимит персональных ответов исчерпан 😊 Продолжим завтра!"
-    );
+    await sendVK(peerId, "На сегодня лимит ответов исчерпан 😊");
     return;
   }
 
-  user.history.push(text);
-  if (user.history.length > 6) user.history.shift();
-
   startTyping(peerId);
 
-  let answer = "Секунду, думаю над ответом 😊";
+  let answer = "Секунду, думаю 😊";
 
   try {
     const systemPrompt = `
-Ты — Анна, виртуальный нутрициолог.
-Говори тепло, по-человечески.
-Помогай с ПП питанием, рецептами, КБЖУ.
-Если перечислены продукты — предложи рецепт из них.
-Если вопрос о здоровье — добавь дисклеймер, что ты не врач.
+Ты — Анна, нутрициолог.
+Говори тепло и поддерживающе.
+Если пользователь уже добивался прогресса — мягко хвали.
+Помогай с ПП питанием, рецептами и КБЖУ.
 `;
 
     const aiResponse = await fetch(
@@ -188,7 +222,7 @@ async function handleMessage(message) {
           model: "gpt-4o-mini",
           messages: [
             { role: "system", content: systemPrompt },
-            ...user.history.map(t => ({ role: "user", content: t }))
+            { role: "user", content: text }
           ]
         })
       }
@@ -205,6 +239,41 @@ async function handleMessage(message) {
   await sendVK(peerId, answer);
 }
 
+// ===== BACKGROUND CHECKS =====
+setInterval(async () => {
+  const now = Date.now();
+
+  for (const userId in memory) {
+    const user = memory[userId];
+
+    // 🔔 Progress reminder (every 3 days)
+    if (
+      user.step >= 3 &&
+      now - user.lastProgressAsk > 3 * 24 * 60 * 60 * 1000
+    ) {
+      await sendVK(
+        userId,
+        `${user.name || "Привет"} 😊 Как у тебя сейчас дела с питанием? Есть ли небольшие результаты?`
+      );
+      user.lastProgressAsk = now;
+    }
+
+    // 👑 Weekly report for VIP
+    if (
+      user.tariff === "vip" &&
+      now - user.lastWeeklyReport > 7 * 24 * 60 * 60 * 1000
+    ) {
+      await sendVK(
+        userId,
+        `${user.name}, подведём итоги недели 💚\nТы держишь фокус на цели «${user.goal}». Продолжай — результат обязательно будет 🙌`
+      );
+      user.lastWeeklyReport = now;
+    }
+  }
+
+  saveMemory();
+}, 60 * 60 * 1000); // проверка раз в час
+
 // ===== HELPERS =====
 function today() {
   return new Date().toISOString().slice(0, 10);
@@ -215,7 +284,7 @@ function startTyping(peer_id) {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      peer_id: peer_id.toString(),
+      peer_id,
       type: "typing",
       access_token: VK_TOKEN,
       v: "5.199"
@@ -228,7 +297,7 @@ async function sendVK(peer_id, text) {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      peer_id: peer_id.toString(),
+      peer_id,
       message: text,
       random_id: Date.now().toString(),
       access_token: VK_TOKEN,
