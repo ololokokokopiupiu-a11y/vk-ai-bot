@@ -34,6 +34,13 @@ const DONUT_LINKS = {
   assistant: "https://vk.com/pp_recepty_vk?w=donut_payment-234876171&levelId=3257"
 };
 
+const TARIFF_NAMES = {
+  free: "Бесплатный",
+  base: "Базовый",
+  advanced: "Продвинутый",
+  assistant: "Личный ассистент"
+};
+
 /* ================= LIMITS ================= */
 const limits = {};
 const FLOOD_DELAY = 4000;
@@ -48,6 +55,8 @@ const TARIFF_LIMITS = {
 /* ================= REGEX ================= */
 const FOOD_REGEX =
   /(пп|питани|калор|кбжу|рецепт|белк|жир|углев|куриц|рыб|мяс|рис|греч|ужин|обед|завтрак)/i;
+
+const TARIFF_REGEX = /(мой тариф|подписк|мой уровень)/i;
 
 /* ================= CALLBACK ================= */
 app.post("/", (req, res) => {
@@ -99,13 +108,52 @@ async function handleMessage(message) {
   user.tariff = await detectTariff(userId);
   saveMemory();
 
+  /* ===== MY TARIFF ===== */
+  if (TARIFF_REGEX.test(text)) {
+    let reply = `💎 Твой тариф: *${TARIFF_NAMES[user.tariff]}*\n\n`;
+
+    if (user.tariff === "free") {
+      reply +=
+        "Доступ ограничен 😊\n\n" +
+        "👇 Доступные тарифы:\n" +
+        `Базовый — ${DONUT_LINKS.base}\n` +
+        `Продвинутый — ${DONUT_LINKS.advanced}\n` +
+        `Личный ассистент — ${DONUT_LINKS.assistant}`;
+    }
+
+    if (user.tariff === "base") {
+      reply +=
+        "✔ КБЖУ по тексту\n" +
+        "❌ Без анализа фото и памяти\n\n" +
+        "🔓 Улучшить:\n" +
+        `${DONUT_LINKS.advanced}`;
+    }
+
+    if (user.tariff === "advanced") {
+      reply +=
+        "✔ Анализ фото (ограниченно)\n" +
+        "✔ Память диалога\n\n" +
+        "🚀 Полный доступ:\n" +
+        `${DONUT_LINKS.assistant}`;
+    }
+
+    if (user.tariff === "assistant") {
+      reply +=
+        "🔥 Полный доступ без ограничений:\n" +
+        "— фото\n— память\n— персональные рекомендации\n\n" +
+        "Ты на максимальном уровне 💚";
+    }
+
+    return sendVK(peerId, reply);
+  }
+
   /* ===== PHOTO ===== */
   if (message.attachments?.some(a => a.type === "photo")) {
     if (!hasAccess(user, "photo", userId)) {
       return sendVK(
         peerId,
         "📸 Анализ еды по фото доступен в тарифе «Личный ассистент» 💚\n" +
-        DONUT_LINKS.assistant
+          DONUT_LINKS.assistant
       );
     }
   }
@@ -121,9 +169,8 @@ async function handleMessage(message) {
     return sendVK(
       peerId,
       "😊 На сегодня лимит ответов исчерпан.\n\n" +
-      "Хочешь продолжить без ограничений?\n" +
-      "💚 «Личный ассистент» 👇\n" +
-      DONUT_LINKS.assistant
+        "💚 «Личный ассистент» без ограничений 👇\n" +
+        DONUT_LINKS.assistant
     );
   }
 
@@ -135,11 +182,11 @@ async function handleMessage(message) {
     user.dialog = user.dialog.slice(-10);
   }
 
-  let messages = [
+  const messages = [
     {
       role: "system",
       content:
-        "Ты Анна — живой нутрициолог. Общайся как человек, логично продолжай диалог."
+        "Ты Анна — живой нутрициолог. Общайся по-человечески, логично продолжай диалог."
     },
     ...(user.dialog || []),
     { role: "user", content: text }
@@ -179,35 +226,27 @@ async function handleMessage(message) {
 
 /* ================= ACCESS ================= */
 function hasAccess(user, feature, userId) {
-  if (user.tariff === "admin") return true;
-
   const plan = TARIFF_LIMITS[user.tariff] || TARIFF_LIMITS.free;
-
   if (feature === "ai") return limits[userId].ai < plan.ai;
   if (feature === "photo") return plan.photo > 0;
-
   return false;
 }
 
 /* ================= TARIFF DETECT ================= */
 async function detectTariff(userId) {
-  // 🔥 АДМИНЫ — ВСЕГДА ASSISTANT
   if (await isAdmin(userId)) return "assistant";
 
   try {
-    const r = await fetch(
-      `https://api.vk.com/method/donut.getSubscription`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          owner_id: "-" + VK_GROUP_ID,
-          user_id: userId,
-          access_token: VK_TOKEN,
-          v: "5.199"
-        })
-      }
-    );
+    const r = await fetch("https://api.vk.com/method/donut.getSubscription", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        owner_id: "-" + VK_GROUP_ID,
+        user_id: userId,
+        access_token: VK_TOKEN,
+        v: "5.199"
+      })
+    });
 
     const data = await r.json();
     const level = data.response?.subscription?.level_id;
@@ -223,19 +262,16 @@ async function detectTariff(userId) {
 /* ================= ADMIN CHECK ================= */
 async function isAdmin(userId) {
   try {
-    const r = await fetch(
-      `https://api.vk.com/method/groups.getMembers`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          group_id: VK_GROUP_ID,
-          filter: "managers",
-          access_token: VK_TOKEN,
-          v: "5.199"
-        })
-      }
-    );
+    const r = await fetch("https://api.vk.com/method/groups.getMembers", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        group_id: VK_GROUP_ID,
+        filter: "managers",
+        access_token: VK_TOKEN,
+        v: "5.199"
+      })
+    });
 
     const data = await r.json();
     return data.response?.items?.some(m => m.id === userId);
