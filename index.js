@@ -5,222 +5,192 @@ import fs from "fs";
 const app = express();
 app.use(express.json());
 
-/* ================= FILE MEMORY ================= */
-const FILE = "./memory.json";
-let memory = fs.existsSync(FILE)
-  ? JSON.parse(fs.readFileSync(FILE, "utf8"))
+// ===== FILE STORAGE =====
+const MEMORY_FILE = "./memory.json";
+let memory = fs.existsSync(MEMORY_FILE)
+  ? JSON.parse(fs.readFileSync(MEMORY_FILE, "utf8"))
   : {};
 
-const save = () =>
-  fs.writeFileSync(FILE, JSON.stringify(memory, null, 2));
+function saveMemory() {
+  fs.writeFileSync(MEMORY_FILE, JSON.stringify(memory, null, 2));
+}
 
-/* ================= ENV ================= */
+// ===== ENV =====
 const VK_TOKEN = process.env.VK_TOKEN;
 const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const GROUP_ID = process.env.VK_GROUP_ID; // ОБЯЗАТЕЛЬНО
 
-/* ================= TARIFFS ================= */
-const TARIFFS = {
-  free: { ai: 3, photo: 0 },
-  base: { ai: 10, photo: 0 },
-  pro: { ai: 20, photo: 1 },
-  vip: { ai: 999, photo: 999 }
+// ===== DONUT LEVELS =====
+const DONUT_LEVELS = {
+  3255: "base",
+  3256: "pro",
+  3257: "vip"
 };
 
-/* ================= REGEX ================= */
-const FOOD = /(пп|питани|похуд|калор|кбжу|рецепт|белк|жир|углев|продукт|есть дома)/i;
-const HEALTH = /(давление|диабет|болит|болезн|врач)/i;
-const THANKS = /(спасибо|благодарю)/i;
-const BYE = /(пока|до свидания)/i;
+// ===== TARIFF LINKS =====
+const TARIFF_LINKS = {
+  base: "https://vk.com/pp_recepty_vk?w=donut_payment-234876171&levelId=3255",
+  pro: "https://vk.com/pp_recepty_vk?w=donut_payment-234876171&levelId=3256",
+  vip: "https://vk.com/pp_recepty_vk?w=donut_payment-234876171&levelId=3257"
+};
 
-/* ================= CALLBACK ================= */
-app.post("/", (req, res) => {
+// ===== LIMITS =====
+const DAILY_LIMITS = {
+  base: 3,
+  pro: 5,
+  vip: Infinity
+};
+
+const limits = {};
+const FLOOD_DELAY = 4000;
+
+// ===== REGEX =====
+const MENU_REGEX = /(меню на|меню|недел|месяц)/i;
+const ALLOWED_REGEX = /(пп|питани|похуд|калор|кбжу|рецепт|продукт|меню)/i;
+
+// ===== CALLBACK =====
+app.post("/", async (req, res) => {
   const body = req.body;
-  if (body.type === "confirmation") return res.send(VK_CONFIRMATION);
+
+  if (body.type === "confirmation") {
+    return res.send(VK_CONFIRMATION);
+  }
+
   res.send("ok");
 
+  // ===== DONUT EVENTS =====
+  if (body.type.startsWith("donut_")) {
+    const userId = body.object.user_id;
+    const levelId = body.object.level?.id;
+
+    if (!memory[userId]) {
+      memory[userId] = { name: null, goal: null, tariff: "base" };
+    }
+
+    if (body.type === "donut_subscription_expired" || body.type === "donut_subscription_cancelled") {
+      memory[userId].tariff = "base";
+    }
+
+    if (levelId && DONUT_LEVELS[levelId]) {
+      memory[userId].tariff = DONUT_LEVELS[levelId];
+    }
+
+    saveMemory();
+    return;
+  }
+
+  // ===== MESSAGES =====
   if (body.type === "message_new") {
     handleMessage(body.object.message).catch(console.error);
   }
 });
 
-/* ================= DONUT CHECK ================= */
-async function isDon(userId) {
-  const res = await fetch(
-    "https://api.vk.com/method/donut.isDon",
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        owner_id: `-${GROUP_ID}`,
-        user_id: userId,
-        access_token: VK_TOKEN,
-        v: "5.199"
-      })
-    }
-  ).then(r => r.json());
-
-  return res?.response === 1;
-}
-
-/* ================= MESSAGE HANDLER ================= */
-async function handleMessage(msg) {
-  const userId = msg.from_id;
-  const peer = msg.peer_id;
-  const text = (msg.text || "").trim();
-  const hasPhoto = msg.attachments?.some(a => a.type === "photo");
+// ===== MESSAGE HANDLER =====
+async function handleMessage(message) {
+  const userId = message.from_id;
+  const peerId = message.peer_id;
+  const text = (message.text || "").trim();
+  const now = Date.now();
 
   if (!memory[userId]) {
-    memory[userId] = {
-      name: null,
-      step: 0,
-      tariff: "free",
-      ai: 0,
-      photo: 0,
-      day: today()
-    };
-    save();
+    memory[userId] = { name: null, goal: null, tariff: "base" };
+    saveMemory();
   }
 
   const user = memory[userId];
 
-  /* reset day */
-  if (user.day !== today()) {
-    user.ai = 0;
-    user.photo = 0;
-    user.day = today();
+  // ===== FLOOD =====
+  if (!limits[userId]) limits[userId] = { last: 0, count: 0, day: today() };
+
+  if (now - limits[userId].last < FLOOD_DELAY) {
+    await sendVK(peerId, "Я здесь 😊 Напиши чуть позже");
+    return;
+  }
+  limits[userId].last = now;
+
+  if (limits[userId].day !== today()) {
+    limits[userId].count = 0;
+    limits[userId].day = today();
   }
 
-  /* auto donut */
-  const don = await isDon(userId);
-  if (!don) user.tariff = "free";
-
-  /* simple replies */
-  if (THANKS.test(text))
-    return send(peer, "Пожалуйста 😊 Я рада помочь 💚");
-
-  if (BYE.test(text))
-    return send(peer, "Береги себя 💚 Я всегда рядом");
-
-  /* onboarding */
-  if (user.step === 0) {
-    user.step = 1;
-    save();
-    return send(peer, "Привет 😊 Я Анна, нутрициолог. Как тебя зовут?");
+  // ===== MENU → VIP =====
+  if (MENU_REGEX.test(text) && user.tariff !== "vip") {
+    await sendVK(
+      peerId,
+      `Меню на неделю и месяц доступно в тарифе «Личный ассистент» 💚\n\n${TARIFF_LINKS.vip}`
+    );
+    return;
   }
 
-  if (user.step === 1) {
-    if (!/^[а-яёa-z]{2,20}$/i.test(text))
-      return send(peer, "Подскажи, пожалуйста, именно имя 💚");
-    user.name = text;
-    user.step = 2;
-    save();
-    return send(peer, `${user.name}, приятно познакомиться 🌿`);
+  // ===== LIMIT =====
+  if (limits[userId].count >= DAILY_LIMITS[user.tariff]) {
+    const next = user.tariff === "base" ? "pro" : "vip";
+    await sendVK(
+      peerId,
+      `Ты достиг лимита 😊\nХочешь больше возможностей?\n${TARIFF_LINKS[next]}`
+    );
+    return;
   }
 
-  /* limits */
-  const lim = TARIFFS[user.tariff];
-
-  if (user.ai >= lim.ai)
-    return send(peer, "Лимит исчерпан 🌿 В тарифах выше возможностей больше");
-
-  if (hasPhoto && user.photo >= lim.photo)
-    return send(peer, "Анализ фото доступен в PRO и VIP 📸");
-
-  /* photo vision */
-  let answer = "";
-
-  if (hasPhoto) {
-    const vision = await fetch(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: "gpt-4o",
-          messages: [
-            {
-              role: "system",
-              content:
-                "Ты нутрициолог. Определи блюдо по фото и оцени КБЖУ."
-            },
-            {
-              role: "user",
-              content: [
-                { type: "text", text: "Что на фото и КБЖУ?" },
-                { type: "image_url", image_url: { url: msg.attachments[0].photo.sizes.at(-1).url } }
-              ]
-            }
-          ]
-        })
-      }
-    ).then(r => r.json());
-
-    answer =
-      vision.choices?.[0]?.message?.content ||
-      "Не смогла распознать фото 😔";
-
-    user.photo++;
-  } else {
-    if (!FOOD.test(text))
-      return send(peer, "Я помогаю только с ПП питанием 🥗");
-
-    const ai = await fetch(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: "gpt-4o-mini",
-          messages: [
-            {
-              role: "system",
-              content:
-                "Ты Анна, нутрициолог. Отвечай тепло и по-человечески."
-            },
-            { role: "user", content: text }
-          ]
-        })
-      }
-    ).then(r => r.json());
-
-    answer = ai.choices?.[0]?.message?.content || "Секунду 😊";
+  if (!ALLOWED_REGEX.test(text)) {
+    await sendVK(peerId, "Я помогаю с ПП питанием и рецептами 🥗");
+    return;
   }
 
-  if (HEALTH.test(text))
-    answer +=
-      "\n\n⚠️ Я не врач. При проблемах со здоровьем обратись к специалисту.";
+  // ===== AI =====
+  limits[userId].count++;
+  startTyping(peerId);
 
-  user.ai++;
-  save();
+  const ai = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: "Ты Анна, нутрициолог. Говори тепло и по-человечески." },
+        { role: "user", content: text }
+      ]
+    })
+  });
 
-  await send(peer, answer);
+  const data = await ai.json();
+  await sendVK(peerId, data.choices?.[0]?.message?.content || "Я рядом 😊");
 }
 
-/* ================= HELPERS ================= */
-const today = () => new Date().toISOString().slice(0, 10);
+// ===== HELPERS =====
+function today() {
+  return new Date().toISOString().slice(0, 10);
+}
 
-const send = (peer, text) =>
-  fetch("https://api.vk.com/method/messages.send", {
+function startTyping(peer_id) {
+  fetch("https://api.vk.com/method/messages.setActivity", {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      peer_id: peer,
+      peer_id,
+      type: "typing",
+      access_token: VK_TOKEN,
+      v: "5.199"
+    })
+  }).catch(() => {});
+}
+
+async function sendVK(peer_id, text) {
+  await fetch("https://api.vk.com/method/messages.send", {
+    method: "POST",
+    body: new URLSearchParams({
+      peer_id,
       message: text,
       random_id: Date.now(),
       access_token: VK_TOKEN,
       v: "5.199"
     })
   });
+}
 
-/* ================= START ================= */
+// ===== START =====
 app.listen(process.env.PORT || 3000, () =>
-  console.log("🔥 Анна запущена")
+  console.log("Bot with Donut auto-tariffs is running 🚀")
 );
