@@ -49,7 +49,8 @@ const TARIFF_LIMITS = {
 const FOOD_REGEX =
   /(пп|питани|калор|кбжу|рецепт|белк|жир|углев|куриц|рыб|мяс|рис|греч|ужин|обед|завтрак|еда|фото)/i;
 
-const END_REGEX = /^(спасибо|благодарю|ок|понятно|отлично|супер|всё)$/i;
+const END_REGEX =
+  /^(спасибо|благодарю|ок|понятно|отлично|супер|всё)$/i;
 
 /* ================= CALLBACK ================= */
 app.post("/", (req, res) => {
@@ -106,21 +107,6 @@ async function handleMessage(message) {
     user.dialog = [];
     saveMemory();
     return;
-  }
-
-  /* ===== МОЙ ТАРИФ ===== */
-  if (/мой тариф|какой тариф|подписка/i.test(text)) {
-    user.active = true;
-    saveMemory();
-
-    return sendVK(
-      peerId,
-      `💚 Ваш тариф: «${tariffName(user.tariff)}»\n\n${
-        user.tariff === "assistant"
-          ? "Полный доступ без ограничений ✨"
-          : "Можно расширить возможности 👇\n" + DONUT_LINKS.assistant
-      }`
-    );
   }
 
   /* ===== PHOTO PRIORITY ===== */
@@ -217,8 +203,12 @@ async function analyzePhoto(photo, text, peerId) {
   try {
     startTyping(peerId);
 
-    // ✅ VK PHOTO STRUCTURE (CRITICAL FIX)
-    const sizes = photo.sizes || [];
+    // ✅ FINAL VK FIX — поддержка обоих форматов
+    const sizes =
+      photo.sizes ||
+      photo.photo?.sizes ||
+      [];
+
     const best = sizes.reduce(
       (m, s) => (!m || s.width > m.width ? s : m),
       null
@@ -368,5 +358,5 @@ async function sendVK(peer_id, text) {
 /* ================= START ================= */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("Bot v1.3.1 FINAL started on port", PORT);
+  console.log("Bot v1.3.2 FINAL FIX started on port", PORT);
 });
