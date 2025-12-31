@@ -226,8 +226,22 @@ async function analyzePhoto(photo, text, peerId) {
   try {
     startTyping(peerId);
 
-    const sizes = photo.photo.sizes;
-    const photoUrl = sizes[sizes.length - 1].url;
+    const sizes = photo.photo.sizes || [];
+
+    const best = sizes.reduce((max, s) => {
+      if (!s?.url) return max;
+      if (!max) return s;
+      return s.width > max.width ? s : max;
+    }, null);
+
+    if (!best?.url) {
+      return sendVK(
+        peerId,
+        "Не удалось получить изображение 😕 Попробуй отправить фото ещё раз."
+      );
+    }
+
+    const photoUrl = best.url;
 
     const messages = [
       {
@@ -257,6 +271,7 @@ async function analyzePhoto(photo, text, peerId) {
     });
 
     const data = await r.json();
+
     const answer =
       data.choices?.[0]?.message?.content ||
       "Не смогла разобрать фото 😕";
