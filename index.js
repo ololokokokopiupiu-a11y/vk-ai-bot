@@ -46,9 +46,8 @@ const TARIFF_LIMITS = {
 };
 
 /* ================= REGEX ================= */
-const FOOD_REGEX =
-  /(пп|питан|калор|кбжу|рецепт|белк|жир|углев|куриц|рыб|мяс|рис|греч|ужин|обед|завтрак|посчитай|фото)/i;
 const TARIFF_REGEX = /(мой тариф|какой тариф|подписк)/i;
+const GREETING_REGEX = /^(привет|здравств|хай|hi|hello|добрый)/i;
 
 /* ================= CALLBACK ================= */
 app.post("/", (req, res) => {
@@ -91,7 +90,8 @@ async function handleMessage(message) {
   if (!memory[userId]) {
     memory[userId] = {
       tariff: "free",
-      dialog: []
+      dialog: [],
+      greeted: false
     };
   }
 
@@ -116,6 +116,17 @@ async function handleMessage(message) {
         (user.tariff !== "assistant"
           ? `\nХочешь больше возможностей?\n${DONUT_LINKS.assistant}`
           : "\nПолный доступ без ограничений ✨")
+    );
+  }
+
+  /* ===== GREETING (ОДИН РАЗ) ===== */
+  if (GREETING_REGEX.test(text) && !user.greeted) {
+    user.greeted = true;
+    saveMemory();
+
+    return sendVK(
+      peerId,
+      "Привет 😊 Я Анна, нутрициолог.\nНапиши, чем могу помочь: питание, КБЖУ, фото еды."
     );
   }
 
@@ -154,14 +165,14 @@ async function handleMessage(message) {
       role: "system",
       content:
         "Ты Анна — живой нутрициолог. Общайся естественно, как человек. " +
-        "Если есть фото — анализируй еду и считай КБЖУ. " +
-        "Если текст — логично продолжай диалог без шаблонов."
+        "Продолжай диалог логично, без шаблонов. " +
+        "Если есть фото — анализируй еду и считай КБЖУ."
     },
     ...(user.dialog || []),
     { role: "user", content: textRaw }
   ];
 
-  let answer = "Секунду, думаю 😊";
+  let answer;
 
   try {
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -177,19 +188,22 @@ async function handleMessage(message) {
     });
 
     const data = await r.json();
-    answer = data.choices?.[0]?.message?.content || answer;
+    answer = data.choices?.[0]?.message?.content;
     limits[userId].ai++;
 
-    if (TARIFF_LIMITS[user.tariff].memory) {
+    if (TARIFF_LIMITS[user.tariff].memory && answer) {
       user.dialog.push({ role: "assistant", content: answer });
     }
 
     saveMemory();
   } catch (e) {
     console.error(e);
+    answer = "Что-то пошло не так, попробуем ещё раз 😊";
   }
 
-  await sendVK(peerId, answer);
+  if (answer) {
+    await sendVK(peerId, answer);
+  }
 }
 
 /* ================= ACCESS ================= */
