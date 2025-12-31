@@ -27,7 +27,7 @@ const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const VK_GROUP_ID = process.env.VK_GROUP_ID;
 
-/* ================= DONUT LINKS ================= */
+/* ================= DONUT ================= */
 const DONUT_LINKS = {
   base: "https://vk.com/pp_recepty_vk?w=donut_payment-234876171&levelId=3255",
   advanced: "https://vk.com/pp_recepty_vk?w=donut_payment-234876171&levelId=3256",
@@ -47,8 +47,9 @@ const TARIFF_LIMITS = {
 
 /* ================= REGEX ================= */
 const FOOD_REGEX =
-  /(пп|питани|калор|кбжу|рецепт|белк|жир|углев|куриц|рыб|мяс|рис|греч|ужин|обед|завтрак)/i;
-const MY_TARIFF_REGEX = /(^мой тариф$|какой тариф)/i;
+  /(пп|питани|калор|кбжу|рецепт|белк|жир|углев|куриц|рыб|мяс|рис|греч|ужин|обед|завтрак|калори)/i;
+
+const TARIFF_REGEX = /(мой тариф|какой мой тариф|тариф)/i;
 
 /* ================= CALLBACK ================= */
 app.post("/", (req, res) => {
@@ -72,12 +73,19 @@ app.post("/", (req, res) => {
 async function handleMessage(message) {
   const userId = message.from_id;
   const peerId = message.peer_id;
-  const textRaw = (message.text || "").trim();
-  const text = textRaw.toLowerCase();
+  const text = (message.text || "").trim().toLowerCase();
   const now = Date.now();
 
   if (!limits[userId]) {
     limits[userId] = { last: 0, ai: 0, day: today() };
+  }
+
+  if (now - limits[userId].last < FLOOD_DELAY) return;
+  limits[userId].last = now;
+
+  if (limits[userId].day !== today()) {
+    limits[userId].ai = 0;
+    limits[userId].day = today();
   }
 
   if (!memory[userId]) {
@@ -86,47 +94,91 @@ async function handleMessage(message) {
 
   const user = memory[userId];
 
-  /* ===== AUTO TARIFF ===== */
+  /* ===== TARIFF ===== */
   user.tariff = await detectTariff(userId);
   saveMemory();
 
-  /* ===== FLOOD (АДМИН НЕ РЕЖЕТСЯ) ===== */
-  if (user.tariff !== "assistant") {
-    if (now - limits[userId].last < FLOOD_DELAY) return;
-  }
-  limits[userId].last = now;
+  /* ===== PHOTO EXTRACT ===== */
+  const photo = message.attachments
+    ?.filter(a => a.type === "photo")
+    ?.map(a => a.photo.sizes.sort((a, b) => b.width - a.width)[0]?.url)[0];
 
-  if (limits[userId].day !== today()) {
-    limits[userId].ai = 0;
-    limits[userId].day = today();
+  /* ===== PHOTO AI ===== */
+  if (photo) {
+    if (!hasAccess(user, "photo", userId)) {
+      return sendVK(
+        peerId,
+        "📸 Анализ еды по фото доступен в тарифе «Личный ассистент» 💚\n" +
+        DONUT_LINKS.assistant
+      );
+    }
+
+    startTyping(peerId);
+
+    try {
+      const r = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + OPENAI_API_KEY,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages: [
+            {
+              role: "system",
+              content:
+                "Ты нутрициолог. По фото еды оцени блюда, примерные граммовки и рассчитай калории и КБЖУ. Укажи, что расчёт приблизительный."
+            },
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "Рассчитай КБЖУ по этому фото еды" },
+                { type: "image_url", image_url: { url: photo } }
+              ]
+            }
+          ]
+        })
+      });
+
+      const data = await r.json();
+      const answer =
+        data.choices?.[0]?.message?.content ||
+        "Не удалось распознать блюдо 😔";
+
+      return sendVK(peerId, answer);
+    } catch (e) {
+      console.error(e);
+      return sendVK(peerId, "Ошибка анализа фото 😔");
+    }
   }
 
-  /* ===== МОЙ ТАРИФ ===== */
-  if (MY_TARIFF_REGEX.test(text)) {
+  /* ===== TARIFF COMMAND ===== */
+  if (TARIFF_REGEX.test(text)) {
     return sendVK(
       peerId,
-      tariffText(user.tariff),
-      tariffKeyboard(user.tariff)
+      `💚 Ваш тариф: «${tariffName(user.tariff)}»\n` +
+      tariffDescription(user.tariff) +
+      (user.tariff !== "assistant"
+        ? `\n\nУлучшить тариф 👇\n${DONUT_LINKS.assistant}`
+        : "")
     );
   }
 
-  /* ===== PHOTO ===== */
-  const hasPhoto = message.attachments?.some(a => a.type === "photo");
-
-  if (hasPhoto && !hasAccess(user, "photo", userId)) {
+  /* ===== FILTER ===== */
+  if (!FOOD_REGEX.test(text)) {
     return sendVK(
       peerId,
-      "📸 Анализ еды по фото доступен в тарифе «Личный ассистент» 💚",
-      assistantKeyboard()
+      "Я по теме питания 😊\nМогу разобрать рацион, КБЖУ или еду по фото 💚"
     );
   }
 
-  /* ===== LIMIT ===== */
   if (!hasAccess(user, "ai", userId)) {
     return sendVK(
       peerId,
-      "😊 Лимит ответов на сегодня исчерпан",
-      upgradeKeyboard(user.tariff)
+      "😊 На сегодня лимит ответов исчерпан.\n\n" +
+      "💚 Полный доступ 👇\n" +
+      DONUT_LINKS.assistant
     );
   }
 
@@ -134,23 +186,21 @@ async function handleMessage(message) {
 
   /* ===== MEMORY ===== */
   if (TARIFF_LIMITS[user.tariff].memory) {
-    user.dialog.push({ role: "user", content: textRaw });
+    user.dialog.push({ role: "user", content: text });
     user.dialog = user.dialog.slice(-10);
   }
 
-  /* ===== AI ===== */
-  const messages = [
+  let messages = [
     {
       role: "system",
       content:
-        "Ты Анна — живой нутрициолог. Общайся тепло, по-человечески. " +
-        "Продолжай диалог логично. Если есть фото еды — анализируй и считай КБЖУ."
+        "Ты Анна — живой нутрициолог. Общайся естественно, как человек."
     },
     ...(user.dialog || []),
-    { role: "user", content: textRaw }
+    { role: "user", content: text }
   ];
 
-  let answer = null;
+  let answer = "Секунду, думаю 😊";
 
   try {
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -166,22 +216,20 @@ async function handleMessage(message) {
     });
 
     const data = await r.json();
-    answer = data.choices?.[0]?.message?.content;
+    answer = data.choices?.[0]?.message?.content || answer;
+
     limits[userId].ai++;
 
-    if (TARIFF_LIMITS[user.tariff].memory && answer) {
+    if (TARIFF_LIMITS[user.tariff].memory) {
       user.dialog.push({ role: "assistant", content: answer });
     }
 
     saveMemory();
   } catch (e) {
     console.error(e);
-    answer = "Что-то пошло не так, попробуем ещё раз 😊";
   }
 
-  if (answer) {
-    await sendVK(peerId, answer);
-  }
+  await sendVK(peerId, answer);
 }
 
 /* ================= ACCESS ================= */
@@ -189,8 +237,10 @@ function hasAccess(user, feature, userId) {
   if (user.tariff === "assistant") return true;
 
   const plan = TARIFF_LIMITS[user.tariff] || TARIFF_LIMITS.free;
+
   if (feature === "ai") return limits[userId].ai < plan.ai;
   if (feature === "photo") return plan.photo > 0;
+
   return false;
 }
 
@@ -210,7 +260,9 @@ async function detectTariff(userId) {
       })
     });
 
-    const level = (await r.json()).response?.subscription?.level_id;
+    const data = await r.json();
+    const level = data.response?.subscription?.level_id;
+
     if (level === 3257) return "assistant";
     if (level === 3256) return "advanced";
     if (level === 3255) return "base";
@@ -232,71 +284,32 @@ async function isAdmin(userId) {
       })
     });
 
-    return (await r.json()).response?.items?.some(m => m.id === userId);
+    const data = await r.json();
+    return data.response?.items?.some(m => m.id === userId);
   } catch {
     return false;
   }
 }
 
-/* ================= UI ================= */
-function tariffText(tariff) {
-  return {
-    free: "Ваш тариф: Бесплатный\n• 3 ответа в день",
-    base: "Ваш тариф: Базовый\n• 5 ответов в день",
-    advanced: "Ваш тариф: Продвинутый\n• 10 ответов\n• Память диалога\n• 1 фото",
-    assistant: "💚 Личный ассистент\n• Без ограничений\n• Анализ фото"
-  }[tariff];
-}
-
-function upgradeKeyboard(tariff) {
-  if (tariff === "assistant") return null;
-  return {
-    inline: true,
-    buttons: [
-      [
-        {
-          action: {
-            type: "open_link",
-            link: DONUT_LINKS.advanced,
-            label: "✨ Продвинутый"
-          }
-        }
-      ],
-      [
-        {
-          action: {
-            type: "open_link",
-            link: DONUT_LINKS.assistant,
-            label: "💚 Личный ассистент"
-          }
-        }
-      ]
-    ]
-  };
-}
-
-function assistantKeyboard() {
-  return {
-    inline: true,
-    buttons: [
-      [
-        {
-          action: {
-            type: "open_link",
-            link: DONUT_LINKS.assistant,
-            label: "💚 Подключить ассистента"
-          }
-        }
-      ]
-    ]
-  };
-}
-
-function tariffKeyboard(tariff) {
-  return upgradeKeyboard(tariff);
-}
-
 /* ================= HELPERS ================= */
+function tariffName(t) {
+  return {
+    free: "Бесплатный",
+    base: "Базовый",
+    advanced: "Продвинутый",
+    assistant: "Личный ассистент"
+  }[t];
+}
+
+function tariffDescription(t) {
+  return {
+    free: "Минимальные возможности",
+    base: "Расширенные ответы",
+    advanced: "КБЖУ + память",
+    assistant: "Полный доступ без ограничений ✨"
+  }[t];
+}
+
 function today() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -314,7 +327,7 @@ function startTyping(peer_id) {
   }).catch(() => {});
 }
 
-async function sendVK(peer_id, text, keyboard = null) {
+async function sendVK(peer_id, text) {
   await fetch("https://api.vk.com/method/messages.send", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -323,8 +336,7 @@ async function sendVK(peer_id, text, keyboard = null) {
       message: text,
       random_id: Date.now().toString(),
       access_token: VK_TOKEN,
-      v: "5.199",
-      ...(keyboard ? { keyboard: JSON.stringify(keyboard) } : {})
+      v: "5.199"
     })
   });
 }
@@ -332,5 +344,5 @@ async function sendVK(peer_id, text, keyboard = null) {
 /* ================= START ================= */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("Bot started on port", PORT);
+  console.log("Bot v1.1 started on port", PORT);
 });
