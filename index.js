@@ -49,6 +49,14 @@ const TARIFF_LIMITS = {
 const FOOD_REGEX =
   /(пп|питани|калор|кбжу|рецепт|белк|жир|углев|куриц|рыб|мяс|рис|греч|ужин|обед|завтрак|еда|фото)/i;
 
+const END_REGEX =
+  /(спасибо|благодар|ок\b|понятно|отлично|супер)/i;
+
+/* ===== END MESSAGE CHECK ===== */
+function isEndMessage(text) {
+  return END_REGEX.test(text) && text.split(" ").length <= 3;
+}
+
 /* ================= CALLBACK ================= */
 app.post("/", (req, res) => {
   const body = req.body;
@@ -89,7 +97,7 @@ async function handleMessage(message) {
   }
 
   if (!memory[userId]) {
-    memory[userId] = { tariff: "free", dialog: [] };
+    memory[userId] = { tariff: "free", dialog: [], active: false };
   }
 
   const user = memory[userId];
@@ -98,8 +106,18 @@ async function handleMessage(message) {
   user.tariff = await detectTariff(userId);
   saveMemory();
 
+  /* ===== ЗАВЕРШЕНИЕ ДИАЛОГА (ТОЛЬКО КОРОТКИЕ ФРАЗЫ) ===== */
+  if (isEndMessage(text)) {
+    user.active = false;
+    saveMemory();
+    return;
+  }
+
   /* ===== МОЙ ТАРИФ ===== */
   if (/мой тариф|какой тариф|подписка/i.test(text)) {
+    user.active = true;
+    saveMemory();
+
     return sendVK(
       peerId,
       `💚 Ваш тариф: «${tariffName(user.tariff)}»\n\n${
@@ -123,12 +141,17 @@ async function handleMessage(message) {
     }
 
     limits[userId].photo++;
+    user.active = true;
+    saveMemory();
 
-    return analyzePhoto(photo, textRaw, peerId, user);
+    return analyzePhoto(photo, textRaw, peerId);
   }
 
   /* ===== МЯГКИЙ ВХОД ===== */
-  if (!FOOD_REGEX.test(text) && user.dialog.length === 0) {
+  if (!FOOD_REGEX.test(text) && !user.active) {
+    user.active = true;
+    saveMemory();
+
     return sendVK(
       peerId,
       "Привет 😊 Я Анна.\nМогу разобрать рацион, КБЖУ или еду по фото 💚"
@@ -143,6 +166,10 @@ async function handleMessage(message) {
         DONUT_LINKS.assistant
     );
   }
+
+  /* ===== ГАРАНТИЯ АКТИВНОГО ДИАЛОГА ===== */
+  user.active = true;
+  saveMemory();
 
   startTyping(peerId);
 
@@ -194,39 +221,29 @@ async function handleMessage(message) {
   await sendVK(peerId, answer);
 }
 
-/* ===== PHOTO ANALYSIS ===== */
-const photo = message.attachments?.find(a => a.type === "photo");
-
-if (photo) {
-  const sizes = photo.photo.sizes || [];
-  const best = sizes.reduce(
-    (m, s) => (!m || s.width > m.width ? s : m),
-    null
-  );
-
-  if (!best?.url) {
-    await sendVK(peerId, "Не удалось получить фото 😕");
-    return;
-  }
-
-  startTyping(peerId);
-
-  const messages = [
-    {
-      role: "system",
-      content:
-        "Ты Анна — нутрициолог. Определи продукты на фото, оцени порцию и рассчитай КБЖУ."
-    },
-    {
-      role: "user",
-      content: [
-        { type: "text", text: textRaw || "Проанализируй еду на фото" },
-        { type: "image_url", image_url: { url: best.url } }
-      ]
-    }
-  ];
-
+/* ================= PHOTO ANALYSIS ================= */
+async function analyzePhoto(photo, text, peerId) {
   try {
+    startTyping(peerId);
+
+    const sizes = photo.photo.sizes;
+    const photoUrl = sizes[sizes.length - 1].url;
+
+    const messages = [
+      {
+        role: "system",
+        content:
+          "Ты Анна — нутрициолог. Определи продукты на фото, оцени порцию и рассчитай КБЖУ. Пиши живо и дружелюбно."
+      },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: text || "Проанализируй еду на фото" },
+          { type: "image_url", image_url: { url: photoUrl } }
+        ]
+      }
+    ];
+
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -245,11 +262,10 @@ if (photo) {
       "Не смогла разобрать фото 😕";
 
     await sendVK(peerId, answer);
-  } catch {
-    await sendVK(peerId, "Ошибка анализа фото 😕");
+  } catch (e) {
+    console.error(e);
+    await sendVK(peerId, "Что-то пошло не так с анализом фото 😕");
   }
-
-  return;
 }
 
 /* ================= ACCESS ================= */
@@ -353,5 +369,5 @@ async function sendVK(peer_id, text) {
 /* ================= START ================= */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("Bot v1.3 started on port", PORT);
+  console.log("Bot v1.3.1 started on port", PORT);
 });
