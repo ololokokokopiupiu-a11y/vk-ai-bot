@@ -194,29 +194,39 @@ async function handleMessage(message) {
   await sendVK(peerId, answer);
 }
 
-/* ================= PHOTO ANALYSIS ================= */
-async function analyzePhoto(photo, text, peerId, user) {
+/* ===== PHOTO ANALYSIS ===== */
+const photo = message.attachments?.find(a => a.type === "photo");
+
+if (photo) {
+  const sizes = photo.photo.sizes || [];
+  const best = sizes.reduce(
+    (m, s) => (!m || s.width > m.width ? s : m),
+    null
+  );
+
+  if (!best?.url) {
+    await sendVK(peerId, "Не удалось получить фото 😕");
+    return;
+  }
+
+  startTyping(peerId);
+
+  const messages = [
+    {
+      role: "system",
+      content:
+        "Ты Анна — нутрициолог. Определи продукты на фото, оцени порцию и рассчитай КБЖУ."
+    },
+    {
+      role: "user",
+      content: [
+        { type: "text", text: textRaw || "Проанализируй еду на фото" },
+        { type: "image_url", image_url: { url: best.url } }
+      ]
+    }
+  ];
+
   try {
-    startTyping(peerId);
-
-    const sizes = photo.photo.sizes;
-    const photoUrl = sizes[sizes.length - 1].url;
-
-    const messages = [
-      {
-        role: "system",
-        content:
-          "Ты Анна — нутрициолог. Определи продукты на фото, оцени примерную порцию и рассчитай КБЖУ. Пиши живо и дружелюбно."
-      },
-      {
-        role: "user",
-        content: [
-          { type: "text", text: text || "Проанализируй еду на фото" },
-          { type: "image_url", image_url: { url: photoUrl } }
-        ]
-      }
-    ];
-
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -235,10 +245,11 @@ async function analyzePhoto(photo, text, peerId, user) {
       "Не смогла разобрать фото 😕";
 
     await sendVK(peerId, answer);
-  } catch (e) {
-    console.error(e);
-    await sendVK(peerId, "Что-то пошло не так с анализом фото 😕");
+  } catch {
+    await sendVK(peerId, "Ошибка анализа фото 😕");
   }
+
+  return;
 }
 
 /* ================= ACCESS ================= */
