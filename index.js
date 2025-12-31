@@ -50,11 +50,10 @@ const FOOD_REGEX =
   /(пп|питани|калор|кбжу|рецепт|белк|жир|углев|куриц|рыб|мяс|рис|греч|ужин|обед|завтрак|еда|фото)/i;
 
 const END_REGEX =
-  /(спасибо|благодар|ок\b|понятно|отлично|супер)/i;
+  /^(спасибо|благодарю|ок|понятно|отлично|супер|всё)$/i;
 
-/* ===== END MESSAGE CHECK ===== */
 function isEndMessage(text) {
-  return END_REGEX.test(text) && text.split(" ").length <= 3;
+  return END_REGEX.test(text.trim());
 }
 
 /* ================= CALLBACK ================= */
@@ -106,9 +105,10 @@ async function handleMessage(message) {
   user.tariff = await detectTariff(userId);
   saveMemory();
 
-  /* ===== ЗАВЕРШЕНИЕ ДИАЛОГА (ТОЛЬКО КОРОТКИЕ ФРАЗЫ) ===== */
+  /* ===== END DIALOG ===== */
   if (isEndMessage(text)) {
     user.active = false;
+    user.dialog = [];
     saveMemory();
     return;
   }
@@ -128,7 +128,7 @@ async function handleMessage(message) {
     );
   }
 
-  /* ===== PHOTO (PRIORITY) ===== */
+  /* ===== PHOTO PRIORITY ===== */
   const photo = message.attachments?.find(a => a.type === "photo");
 
   if (photo) {
@@ -147,7 +147,7 @@ async function handleMessage(message) {
     return analyzePhoto(photo, textRaw, peerId);
   }
 
-  /* ===== МЯГКИЙ ВХОД ===== */
+  /* ===== SOFT START ===== */
   if (!FOOD_REGEX.test(text) && !user.active) {
     user.active = true;
     saveMemory();
@@ -167,23 +167,19 @@ async function handleMessage(message) {
     );
   }
 
-  /* ===== ГАРАНТИЯ АКТИВНОГО ДИАЛОГА ===== */
-  user.active = true;
-  saveMemory();
-
   startTyping(peerId);
 
   /* ===== MEMORY ===== */
   if (TARIFF_LIMITS[user.tariff].memory) {
     user.dialog.push({ role: "user", content: textRaw });
-    user.dialog = user.dialog.slice(-12);
+    user.dialog = user.dialog.slice(-10);
   }
 
   const messages = [
     {
       role: "system",
       content:
-        "Ты Анна — живой нутрициолог. Общайся естественно, без шаблонов. После ответа мягко продолжай диалог."
+        "Ты Анна — живой нутрициолог. Общайся естественно. После ответа мягко задай уточняющий вопрос."
     },
     ...(user.dialog || []),
     { role: "user", content: textRaw }
@@ -226,20 +222,27 @@ async function analyzePhoto(photo, text, peerId) {
   try {
     startTyping(peerId);
 
-    const sizes = photo.photo.sizes;
-    const photoUrl = sizes[sizes.length - 1].url;
+    const sizes = photo.photo.sizes || [];
+    const best = sizes.reduce(
+      (m, s) => (!m || s.width > m.width ? s : m),
+      null
+    );
+
+    if (!best?.url) {
+      return sendVK(peerId, "Не удалось получить фото 😕");
+    }
 
     const messages = [
       {
         role: "system",
         content:
-          "Ты Анна — нутрициолог. Определи продукты на фото, оцени порцию и рассчитай КБЖУ. Пиши живо и дружелюбно."
+          "Ты Анна — нутрициолог. Определи продукты на фото, оцени порцию и рассчитай КБЖУ. Пиши дружелюбно."
       },
       {
         role: "user",
         content: [
           { type: "text", text: text || "Проанализируй еду на фото" },
-          { type: "image_url", image_url: { url: photoUrl } }
+          { type: "image_url", image_url: { url: best.url } }
         ]
       }
     ];
@@ -264,7 +267,7 @@ async function analyzePhoto(photo, text, peerId) {
     await sendVK(peerId, answer);
   } catch (e) {
     console.error(e);
-    await sendVK(peerId, "Что-то пошло не так с анализом фото 😕");
+    await sendVK(peerId, "Ошибка анализа фото 😕");
   }
 }
 
@@ -369,5 +372,5 @@ async function sendVK(peer_id, text) {
 /* ================= START ================= */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("Bot v1.3.1 started on port", PORT);
+  console.log("Bot v1.3.1 STABLE started on port", PORT);
 });
