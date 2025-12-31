@@ -36,7 +36,7 @@ const DONUT_LINKS = {
 
 /* ================= LIMITS ================= */
 const limits = {};
-const FLOOD_DELAY = 3500;
+const FLOOD_DELAY = 4000;
 
 const TARIFF_LIMITS = {
   free: { ai: 3, photo: 0, memory: false },
@@ -46,8 +46,8 @@ const TARIFF_LIMITS = {
 };
 
 /* ================= REGEX ================= */
-const TARIFF_REGEX = /(мой тариф|какой тариф|подписк)/i;
-const GREETING_REGEX = /^(привет|здравств|хай|hi|hello|добрый)/i;
+const FOOD_REGEX =
+  /(пп|питани|калор|кбжу|рецепт|белк|жир|углев|куриц|рыб|мяс|рис|греч|ужин|обед|завтрак)/i;
 
 /* ================= CALLBACK ================= */
 app.post("/", (req, res) => {
@@ -91,88 +91,90 @@ async function handleMessage(message) {
     memory[userId] = {
       tariff: "free",
       dialog: [],
-      greeted: false
+      lastIntent: null
     };
   }
 
   const user = memory[userId];
 
-  /* ===== TARIFF DETECT ===== */
+  /* ===== AUTO TARIFF ===== */
   user.tariff = await detectTariff(userId);
   saveMemory();
 
-  /* ===== MY TARIFF ===== */
-  if (TARIFF_REGEX.test(text)) {
-    const names = {
-      free: "Бесплатный",
-      base: "Базовый",
-      advanced: "Продвинутый",
-      assistant: "Личный ассистент"
-    };
+  const isAssistant = user.tariff === "assistant";
+
+  /* ================= SERVICE COMMANDS ================= */
+  if (text === "мой тариф" || text === "какой мой тариф") {
+    if (isAssistant) {
+      return sendVK(
+        peerId,
+        "💚 Ваш тариф: «Личный ассистент»\nПолный доступ без ограничений ✨"
+      );
+    }
 
     return sendVK(
       peerId,
-      `💚 Ваш тариф: «${names[user.tariff]}»\n` +
-        (user.tariff !== "assistant"
-          ? `\nХочешь больше возможностей?\n${DONUT_LINKS.assistant}`
-          : "\nПолный доступ без ограничений ✨")
+      `Ваш тариф: «${user.tariff}» 😊\n\nХочешь больше возможностей?\n👇\n${DONUT_LINKS.assistant}`
     );
   }
 
-  /* ===== GREETING (ОДИН РАЗ) ===== */
-  if (GREETING_REGEX.test(text) && !user.greeted) {
-    user.greeted = true;
-    saveMemory();
-
+  if (text === "профиль") {
     return sendVK(
       peerId,
-      "Привет 😊 Я Анна, нутрициолог.\nНапиши, чем могу помочь: питание, КБЖУ, фото еды."
+      `👤 Профиль\nТариф: ${user.tariff}\nПамять диалога: ${
+        TARIFF_LIMITS[user.tariff].memory ? "включена" : "выключена"
+      }`
     );
   }
 
-  /* ===== PHOTO ===== */
-  const hasPhoto = message.attachments?.some(a => a.type === "photo");
-
-  if (hasPhoto && !hasAccess(user, "photo", userId)) {
-    return sendVK(
-      peerId,
-      "📸 Анализ еды по фото доступен в тарифе «Личный ассистент» 💚\n" +
-        DONUT_LINKS.assistant
-    );
+  /* ================= PHOTO ================= */
+  if (message.attachments?.some(a => a.type === "photo")) {
+    if (!hasAccess(user, "photo", userId)) {
+      return sendVK(
+        peerId,
+        "📸 Анализ еды по фото доступен в тарифе «Личный ассистент» 💚\n" +
+          DONUT_LINKS.assistant
+      );
+    }
   }
 
-  /* ===== LIMIT ===== */
-  if (!hasAccess(user, "ai", userId)) {
-    return sendVK(
-      peerId,
-      "😊 На сегодня лимит ответов исчерпан.\n\n" +
-        "Хочешь продолжить без ограничений?\n" +
-        DONUT_LINKS.assistant
-    );
+  /* ================= НЕ ASSISTANT — ФИЛЬТР ================= */
+  if (!isAssistant) {
+    if (!FOOD_REGEX.test(text)) {
+      return sendVK(
+        peerId,
+        "Поняла 🙂\nДавай вернёмся к питанию — что сегодня ел(а)? 🥗"
+      );
+    }
+
+    if (!hasAccess(user, "ai", userId)) {
+      return sendVK(
+        peerId,
+        "😊 На сегодня лимит ответов исчерпан.\n\n💚 «Личный ассистент» без ограничений 👇\n" +
+          DONUT_LINKS.assistant
+      );
+    }
   }
 
+  /* ================= AI ================= */
   startTyping(peerId);
 
-  /* ===== MEMORY ===== */
   if (TARIFF_LIMITS[user.tariff].memory) {
     user.dialog.push({ role: "user", content: textRaw });
-    user.dialog = user.dialog.slice(-12);
+    user.dialog = user.dialog.slice(-10);
   }
 
-  /* ===== AI ===== */
-  const messages = [
+  let messages = [
     {
       role: "system",
       content:
-        "Ты Анна — живой нутрициолог. Общайся естественно, как человек. " +
-        "Продолжай диалог логично, без шаблонов. " +
-        "Если есть фото — анализируй еду и считай КБЖУ."
+        "Ты Анна — живой нутрициолог. Общайся тепло, как человек. Никаких шаблонов и отказов. Если тема уходит — мягко возвращай к питанию."
     },
     ...(user.dialog || []),
     { role: "user", content: textRaw }
   ];
 
-  let answer;
+  let answer = "Секунду, думаю 😊";
 
   try {
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -188,28 +190,24 @@ async function handleMessage(message) {
     });
 
     const data = await r.json();
-    answer = data.choices?.[0]?.message?.content;
+    answer = data.choices?.[0]?.message?.content || answer;
+
     limits[userId].ai++;
 
-    if (TARIFF_LIMITS[user.tariff].memory && answer) {
+    if (TARIFF_LIMITS[user.tariff].memory) {
       user.dialog.push({ role: "assistant", content: answer });
     }
 
     saveMemory();
   } catch (e) {
     console.error(e);
-    answer = "Что-то пошло не так, попробуем ещё раз 😊";
   }
 
-  if (answer) {
-    await sendVK(peerId, answer);
-  }
+  await sendVK(peerId, answer);
 }
 
 /* ================= ACCESS ================= */
 function hasAccess(user, feature, userId) {
-  if (user.tariff === "assistant") return true;
-
   const plan = TARIFF_LIMITS[user.tariff] || TARIFF_LIMITS.free;
 
   if (feature === "ai") return limits[userId].ai < plan.ai;
@@ -245,7 +243,7 @@ async function detectTariff(userId) {
   return "free";
 }
 
-/* ================= ADMIN ================= */
+/* ================= ADMIN CHECK ================= */
 async function isAdmin(userId) {
   try {
     const r = await fetch("https://api.vk.com/method/groups.getMembers", {
@@ -301,5 +299,5 @@ async function sendVK(peer_id, text) {
 /* ================= START ================= */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("Bot started on port", PORT);
+  console.log("Bot v1.0 started on port", PORT);
 });
