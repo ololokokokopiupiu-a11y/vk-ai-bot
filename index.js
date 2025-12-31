@@ -222,7 +222,8 @@ async function analyzePhoto(photo, text, peerId) {
   try {
     startTyping(peerId);
 
-    const sizes = photo.photo.sizes || [];
+    // ✅ VK FIX: photo.sizes, НЕ photo.photo.sizes
+    const sizes = photo.sizes || [];
     const best = sizes.reduce(
       (m, s) => (!m || s.width > m.width ? s : m),
       null
@@ -266,7 +267,7 @@ async function analyzePhoto(photo, text, peerId) {
 
     await sendVK(peerId, answer);
   } catch (e) {
-    console.error(e);
+    console.error("PHOTO ERROR:", e);
     await sendVK(peerId, "Ошибка анализа фото 😕");
   }
 }
