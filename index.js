@@ -76,7 +76,7 @@ async function handleMessage(message) {
   const now = Date.now();
 
   if (!limits[userId]) {
-    limits[userId] = { last: 0, ai: 0, day: today() };
+    limits[userId] = { last: 0, ai: 0, photo: 0, day: today() };
   }
 
   if (now - limits[userId].last < FLOOD_DELAY) return;
@@ -84,6 +84,7 @@ async function handleMessage(message) {
 
   if (limits[userId].day !== today()) {
     limits[userId].ai = 0;
+    limits[userId].photo = 0;
     limits[userId].day = today();
   }
 
@@ -109,19 +110,25 @@ async function handleMessage(message) {
     );
   }
 
-  /* ===== PHOTO ===== */
-  const hasPhoto = message.attachments?.some(a => a.type === "photo");
+  /* ===== PHOTO (PRIORITY) ===== */
+  const photo = message.attachments?.find(a => a.type === "photo");
 
-  if (hasPhoto && !hasAccess(user, "photo", userId)) {
-    return sendVK(
-      peerId,
-      "📸 Анализ еды по фото доступен в тарифе «Личный ассистент» 💚\n" +
-        DONUT_LINKS.assistant
-    );
+  if (photo) {
+    if (!hasAccess(user, "photo", userId)) {
+      return sendVK(
+        peerId,
+        "📸 Анализ еды по фото доступен в тарифе «Личный ассистент» 💚\n" +
+          DONUT_LINKS.assistant
+      );
+    }
+
+    limits[userId].photo++;
+
+    return analyzePhoto(photo, textRaw, peerId, user);
   }
 
   /* ===== МЯГКИЙ ВХОД ===== */
-  if (!FOOD_REGEX.test(text) && user.dialog.length === 0 && !hasPhoto) {
+  if (!FOOD_REGEX.test(text) && user.dialog.length === 0) {
     return sendVK(
       peerId,
       "Привет 😊 Я Анна.\nМогу разобрать рацион, КБЖУ или еду по фото 💚"
@@ -149,7 +156,7 @@ async function handleMessage(message) {
     {
       role: "system",
       content:
-        "Ты Анна — живой нутрициолог. Общайся естественно, без шаблонов. После анализа еды или КБЖУ мягко продолжай диалог: уточняй цель, порцию или предлагай улучшения."
+        "Ты Анна — живой нутрициолог. Общайся естественно, без шаблонов. После ответа мягко продолжай диалог."
     },
     ...(user.dialog || []),
     { role: "user", content: textRaw }
@@ -187,12 +194,59 @@ async function handleMessage(message) {
   await sendVK(peerId, answer);
 }
 
+/* ================= PHOTO ANALYSIS ================= */
+async function analyzePhoto(photo, text, peerId, user) {
+  try {
+    startTyping(peerId);
+
+    const sizes = photo.photo.sizes;
+    const photoUrl = sizes[sizes.length - 1].url;
+
+    const messages = [
+      {
+        role: "system",
+        content:
+          "Ты Анна — нутрициолог. Определи продукты на фото, оцени примерную порцию и рассчитай КБЖУ. Пиши живо и дружелюбно."
+      },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: text || "Проанализируй еду на фото" },
+          { type: "image_url", image_url: { url: photoUrl } }
+        ]
+      }
+    ];
+
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + OPENAI_API_KEY,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages
+      })
+    });
+
+    const data = await r.json();
+    const answer =
+      data.choices?.[0]?.message?.content ||
+      "Не смогла разобрать фото 😕";
+
+    await sendVK(peerId, answer);
+  } catch (e) {
+    console.error(e);
+    await sendVK(peerId, "Что-то пошло не так с анализом фото 😕");
+  }
+}
+
 /* ================= ACCESS ================= */
 function hasAccess(user, feature, userId) {
   if (user.tariff === "assistant") return true;
   const plan = TARIFF_LIMITS[user.tariff] || TARIFF_LIMITS.free;
   if (feature === "ai") return limits[userId].ai < plan.ai;
-  if (feature === "photo") return plan.photo > 0;
+  if (feature === "photo") return limits[userId].photo < plan.photo;
   return false;
 }
 
@@ -288,5 +342,5 @@ async function sendVK(peer_id, text) {
 /* ================= START ================= */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("Bot started on port", PORT);
+  console.log("Bot v1.3 started on port", PORT);
 });
