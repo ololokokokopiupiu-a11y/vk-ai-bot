@@ -1,5 +1,6 @@
 import express from "express";
 import fetch from "node-fetch";
+import fs from "fs";
 
 const app = express();
 app.use(express.json());
@@ -8,9 +9,21 @@ app.use(express.json());
 const VK_TOKEN = process.env.VK_TOKEN;
 const VK_CONFIRMATION = process.env.VK_CONFIRMATION;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const VK_GROUP_ID = process.env.VK_GROUP_ID;
+
+/* ================= LIMITS ================= */
+const limits = {};
+const FLOOD_DELAY = 3000;
+
+const TARIFF_LIMITS = {
+  free: { ai: 5, photo: 0 },
+  base: { ai: 10, photo: 0 },
+  advanced: { ai: 20, photo: 1 },
+  assistant: { ai: 9999, photo: 9999 }
+};
 
 /* ================= CALLBACK ================= */
-app.post("/", async (req, res) => {
+app.post("/", (req, res) => {
   const body = req.body;
 
   if (body.type === "confirmation") {
@@ -29,67 +42,87 @@ app.post("/", async (req, res) => {
 
 /* ================= MAIN ================= */
 async function handleMessage(message) {
+  const userId = message.from_id;
   const peerId = message.peer_id;
   const textRaw = (message.text || "").trim();
+  const now = Date.now();
 
-  /* ===== PHOTO PRIORITY ===== */
-  const photo = message.attachments?.find(a => a.type === "photo");
+  if (!limits[userId]) {
+    limits[userId] = { last: 0, ai: 0, photo: 0, day: today() };
+  }
+
+  if (now - limits[userId].last < FLOOD_DELAY) return;
+  limits[userId].last = now;
+
+  if (limits[userId].day !== today()) {
+    limits[userId].ai = 0;
+    limits[userId].photo = 0;
+    limits[userId].day = today();
+  }
+
+  const tariff = await detectTariff(userId);
+  const plan = TARIFF_LIMITS[tariff];
+
+  /* ===== GET PHOTO (OWN OR FORWARDED) ===== */
+  const photo = getPhotoFromMessage(message);
 
   if (photo) {
+    if (limits[userId].photo >= plan.photo) {
+      return sendVK(
+        peerId,
+        "📸 Анализ фото доступен в тарифе «Личный ассистент» 💚"
+      );
+    }
+
+    limits[userId].photo++;
     return analyzePhoto(photo, textRaw, peerId);
   }
 
-  /* ===== EMPTY MESSAGE ===== */
-  if (!textRaw) return;
+  /* ===== TEXT ===== */
+  if (limits[userId].ai >= plan.ai) {
+    return sendVK(
+      peerId,
+      "😊 Лимит сообщений на сегодня исчерпан.\nХочешь без ограничений — «Личный ассистент» 💚"
+    );
+  }
 
   startTyping(peerId);
-
-  const messages = [
-    {
-      role: "system",
-      content:
-        "Ты Анна — живой нутрициолог. Отвечай дружелюбно, понятно и по делу."
-    },
-    { role: "user", content: textRaw }
-  ];
-
-  let answer;
 
   try {
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        Authorization: "Bearer " + OPENAI_API_KEY,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
         model: "gpt-4o-mini",
-        messages
+        messages: [
+          {
+            role: "system",
+            content:
+              "Ты Анна — живой нутрициолог. Отвечай полезно и по делу."
+          },
+          { role: "user", content: textRaw }
+        ]
       })
     });
 
-    if (!r.ok) {
-      const err = await r.text();
-      console.error("OpenAI error:", r.status, err);
-      throw new Error("OpenAI failed");
-    }
-
     const data = await r.json();
-    answer = data.choices?.[0]?.message?.content;
-  } catch (e) {
-    console.error("AI ERROR:", e.message);
-  }
+    const answer =
+      data.choices?.[0]?.message?.content ||
+      "Не смогла ответить 😕";
 
-  if (!answer) {
-    answer = "Я здесь 😊 Напиши запрос чуть подробнее.";
+    limits[userId].ai++;
+    await sendVK(peerId, answer);
+  } catch {
+    await sendVK(peerId, "Ошибка ответа 😕");
   }
-
-  await sendVK(peerId, answer);
 }
 
-/* ================= PHOTO ANALYSIS ================= */
+/* ================= PHOTO ================= */
 async function analyzePhoto(photo, text, peerId) {
-  const sizes = photo.photo?.sizes || [];
+  const sizes = photo.photo.sizes || [];
   const best = sizes.reduce(
     (m, s) => (!m || s.width > m.width ? s : m),
     null
@@ -101,13 +134,11 @@ async function analyzePhoto(photo, text, peerId) {
 
   startTyping(peerId);
 
-  let answer;
-
   try {
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        Authorization: "Bearer " + OPENAI_API_KEY,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
@@ -116,12 +147,12 @@ async function analyzePhoto(photo, text, peerId) {
           {
             role: "system",
             content:
-              "Ты Анна — нутрициолог. Определи продукты на фото и рассчитай примерное КБЖУ."
+              "Ты Анна — нутрициолог. Определи продукты на фото и рассчитай КБЖУ."
           },
           {
             role: "user",
             content: [
-              { type: "text", text: text || "Проанализируй еду на фото" },
+              { type: "text", text: text || "Проанализируй еду" },
               { type: "image_url", image_url: { url: best.url } }
             ]
           }
@@ -129,26 +160,58 @@ async function analyzePhoto(photo, text, peerId) {
       })
     });
 
-    if (!r.ok) {
-      const err = await r.text();
-      console.error("Vision error:", r.status, err);
-      throw new Error("Vision failed");
-    }
-
     const data = await r.json();
-    answer = data.choices?.[0]?.message?.content;
-  } catch (e) {
-    console.error("PHOTO ERROR:", e.message);
-  }
+    const answer =
+      data.choices?.[0]?.message?.content ||
+      "Не смогла разобрать фото 😕";
 
-  if (!answer) {
-    answer = "Не смогла разобрать фото 😕 Попробуй другое.";
+    await sendVK(peerId, answer);
+  } catch {
+    await sendVK(peerId, "Ошибка анализа фото 😕");
   }
-
-  await sendVK(peerId, answer);
 }
 
 /* ================= HELPERS ================= */
+function getPhotoFromMessage(message) {
+  const direct = message.attachments?.find(a => a.type === "photo");
+  if (direct) return direct;
+
+  for (const fwd of message.fwd_messages || []) {
+    const p = fwd.attachments?.find(a => a.type === "photo");
+    if (p) return p;
+  }
+
+  return null;
+}
+
+async function detectTariff(userId) {
+  try {
+    const r = await fetch("https://api.vk.com/method/donut.getSubscription", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        owner_id: "-" + VK_GROUP_ID,
+        user_id: userId,
+        access_token: VK_TOKEN,
+        v: "5.199"
+      })
+    });
+
+    const data = await r.json();
+    const level = data.response?.subscription?.level_id;
+
+    if (level === 3257) return "assistant";
+    if (level === 3256) return "advanced";
+    if (level === 3255) return "base";
+  } catch {}
+
+  return "free";
+}
+
+function today() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function startTyping(peer_id) {
   fetch("https://api.vk.com/method/messages.setActivity", {
     method: "POST",
@@ -179,5 +242,5 @@ async function sendVK(peer_id, text) {
 /* ================= START ================= */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("Bot v1.3.1 started");
+  console.log("Bot v1.3.1 STABLE started on port", PORT);
 });
